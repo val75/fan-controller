@@ -164,6 +164,10 @@ class BadChange(ValueError):
     """Unknown parameter, no-op change, or a value of the wrong type."""
 
 
+class NoOpChange(BadChange):
+    """A change whose new value equals its current value."""
+
+
 def apply_changes(t: Thresholds, changes: Sequence[Change]) -> Thresholds:
     """Apply changes in order; each `from_` must equal the value at that point."""
     for change in changes:
@@ -177,7 +181,7 @@ def _apply_one(t: Thresholds, c: Change) -> Thresholds:
         if not _is_number(c.from_) or not _is_number(c.to):
             raise BadChange(f"{c.param}: values must be numbers")
         if c.from_ == c.to:
-            raise BadChange(f"{c.param}: no-op change")
+            raise NoOpChange(f"{c.param}: no-op change")
         current = getattr(t, field)
         if current != c.from_:
             raise StaleFrom(c.param, f"{c.param} is {current!r}, not {c.from_!r}")
@@ -198,7 +202,7 @@ def _apply_one(t: Thresholds, c: Change) -> Thresholds:
         if not isinstance(c.from_, AmbientRule) or not isinstance(c.to, AmbientRule):
             raise BadChange("ambient.replace: from and to must be rules")
         if c.from_ == c.to:
-            raise BadChange("ambient.replace: no-op change")
+            raise NoOpChange("ambient.replace: no-op change")
         if c.from_ not in rules:
             raise StaleFrom(c.param, f"no ambient rule {c.from_.to_dict()}")
         rules[rules.index(c.from_)] = c.to
