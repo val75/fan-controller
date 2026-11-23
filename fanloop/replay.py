@@ -4,7 +4,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import List, Tuple, Union
 
+from fanloop.busy import BusyDetector
+from fanloop.control import ControlInputs, Controller
+from fanloop.levels import Level
 from fanloop.readings import CardReading
+from fanloop.thresholds import Thresholds
 
 Row = Tuple[float, List[CardReading]]
 
@@ -39,3 +43,21 @@ def read_fan_test_csv(path: Union[str, Path]) -> List[Row]:
             else:
                 rows[-1][1].append(reading)
     return rows
+
+
+def run_control(rows: List[Row], thresholds: Thresholds) -> List[Tuple[float, Level, str]]:
+    """Replay the control rule over a log, open loop: the log was recorded at a
+    fixed offset, so this shows when the loop would step, not what a step does.
+    Returns the level changes only, starting from Off."""
+    controller = Controller(thresholds)
+    busy = BusyDetector()
+    level = Level.OFF
+    changes: List[Tuple[float, Level, str]] = []
+    for ts, cards in rows:
+        inputs = ControlInputs(now=ts, cards=cards, busy=busy.update(ts, cards),
+                               inlet_c=None, system_power_w=None, hold_min=None)
+        decision = controller.decide(inputs, level)
+        if decision.level != level:
+            changes.append((ts, decision.level, decision.reason))
+            level = decision.level
+    return changes
