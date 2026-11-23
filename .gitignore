@@ -3,3 +3,7 @@
 
 # Real addresses and other local values (template: .env.example)
 .env
+
+# Python and local databases
+__pycache__/
+*.db
