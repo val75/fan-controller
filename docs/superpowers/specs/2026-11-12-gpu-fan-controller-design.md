@@ -7,11 +7,11 @@ the user hasn't explicitly agreed to; change them freely.
 
 ## 1. Intent
 
-The lab GPU box `t4` (Dell PowerEdge R730) has two passively cooled Tesla T4s.
-
 **Names, not addresses:** this repo is public, so it uses SSH aliases (`t4`, `hag`, `docks`)
 and `r730-bmc` for the iDRAC. The real addresses live in a local, untracked `.env`
 (template: `.env.example`).
+
+The lab GPU box `t4` (Dell PowerEdge R730) has two passively cooled Tesla T4s.
 Under sustained load they overheat and throttle unless the chassis fans run faster. The only
 fan control used here is the iDRAC **fan speed offset**, which raises Dell's own fan curve by
 a step. A fixed offset is a poor compromise:
@@ -520,8 +520,9 @@ receive Telegram messages (a new way in), and every chat change would need a sec
   doesn't silently go back to automatic driver updates.
 - **Dry-run mode:** decide and log, but don't set the offset. In dry-run even the emergency
   rule only logs; the runbook says so.
-- **Runbook** *(decided 2026-11-23)*, written during the build, in `~/infra/docs/` (where
-  `~/infra/CLAUDE.md` puts runbooks). It covers: holding the fans higher (`fanctl hold`); a
+- **Runbook** *(decided 2026-11-23)*, written during the build, in this repo as
+  `docs/runbook.md` (the user's choice for now, over `~/infra/docs/`; it holds no
+  addresses). It covers: holding the fans higher (`fanctl hold`); a
   fixed-offset test (stop the service, set the offset with `racadm`, start the service
   afterwards; **while it's stopped there's no emergency rule**); switching dry-run on and
   off; changing and reverting thresholds; muting the review watchdog; restoring from the
