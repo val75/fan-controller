@@ -1,0 +1,3 @@
+[Key=system.Embedded.1#ThermalSettings.1]
+FanSpeedOffset=Off
+
