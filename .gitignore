@@ -1,0 +1,5 @@
+# Personal Claude Code settings
+.claude/settings.local.json
+
+# Real addresses and other local values (template: .env.example)
+.env
