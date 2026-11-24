@@ -1,0 +1,2 @@
+#!/bin/sh
+PYTHONPATH=/opt/fan-controller exec /usr/bin/python3 -m fanloop.cli "$@"
