@@ -18,7 +18,7 @@ from fanloop.marks import Marks
 from fanloop.readings import CardReading, IpmiReading
 from fanloop.service import Service
 from fanloop.store import Store
-from fanloop.thresholds import load_defaults
+from fanloop.thresholds import Change, Thresholds, load_defaults
 from fanloop.watchdog import ReviewWatchdog
 
 TOKEN = "test-token-0123456789"
@@ -130,6 +130,44 @@ class TestReads(ApiTest):
         self.assertEqual(summary["level_s"], {"medium": 500})
         self.assertEqual(summary["peak_c"], {"0": 74, "1": 70})
         self.assertEqual(summary["qualifying_on_current"], 0)  # the episode is on v1, current is v2
+
+
+class TestTruncation(ApiTest):
+    """A long window returns the newest rows and says it was cut, so Hermes never
+    computes from the oldest part of a window without knowing."""
+
+    def test_events_keep_the_newest_and_say_so(self):
+        for i in range(600):
+            self.store.add_event(1000.0 + i, "level", {"i": i})
+        _, body = self.request("GET", "/events?since=0&kinds=level")
+        self.assertEqual(len(body["events"]), 500)
+        self.assertTrue(body["truncated"])
+        self.assertEqual([body["events"][0]["detail"]["i"], body["events"][-1]["detail"]["i"]], [100, 599])
+        _, body = self.request("GET", "/events?since=1550&kinds=level")
+        self.assertEqual((len(body["events"]), body["truncated"]), (50, False))
+
+    def test_episodes_keep_the_newest_and_say_so(self):
+        for i in range(250):
+            self.store.add_episode(Episode(1000.0 + i * 1000, 1500.0 + i * 1000, 500, 14, 14, 14, {0: 60 + i % 10},
+                                           None, 0, {"low": 500}, 1, False, None, [1]))
+        _, body = self.request("GET", "/episodes?since=0")
+        self.assertEqual(len(body["episodes"]), 200)
+        self.assertTrue(body["truncated"])
+        self.assertEqual(body["episodes"][-1]["start"], 1000.0 + 249 * 1000)
+
+    def test_changes_keep_the_newest_and_say_so(self):
+        t = load_defaults()
+        for i in range(501):
+            low = 50 + i % 2
+            t2 = Thresholds(low, t.medium, t.high, t.margin, t.hold_s, t.ambient_rules)
+            self.store.add_version(t2, "user-cli", f"n{i}", [Change("step_up.low", t.low, low)], 1000.0 + i)
+            t = t2
+        _, body = self.request("GET", "/changes")
+        self.assertEqual(len(body["versions"]), 500)
+        self.assertTrue(body["truncated"])
+        self.assertEqual(body["versions"][-1]["version"], 502)
+        _, body = self.request("GET", "/changes?since_version=500")
+        self.assertEqual((len(body["versions"]), body["truncated"]), (2, False))
 
 
 class TestTcpWrites(ApiTest):

@@ -158,21 +158,35 @@ def r_history(h, q, body, now):
     return 200, {"samples": h.store.samples(start, end, max_points=300)}
 
 
+# Lists answer with the newest rows of the window, oldest first, and `truncated: true`
+# when older rows in the window were left out (then ask again with a later `since`).
+EVENTS_LIMIT, EPISODES_LIMIT, CHANGES_LIMIT = 500, 200, 500
+
+
+def _newest(rows: list, limit: int) -> Tuple[list, bool]:
+    """rows were fetched with limit + 1: one more means the window was cut."""
+    return (rows[1:], True) if len(rows) > limit else (rows, False)
+
+
 def r_events(h, q, body, now):
     since = _q(q, "since", now - 86400, float)
     kinds = [k for k in q.get("kinds", [""])[-1].split(",") if k] or None
-    return 200, {"events": h.store.events(since, kinds=kinds, limit=500)}
+    rows, cut = _newest(h.store.events(since, kinds=kinds, limit=EVENTS_LIMIT + 1), EVENTS_LIMIT)
+    return 200, {"events": rows, "truncated": cut}
 
 
 def r_episodes(h, q, body, now):
     since = _q(q, "since", 0.0, float)
     version = _q(q, "version", None, int)
-    return 200, {"episodes": [e.to_dict() for e in h.store.episodes(since_ts=since, version=version, limit=200)]}
+    rows, cut = _newest(h.store.episodes(since_ts=since, version=version, limit=EPISODES_LIMIT + 1), EPISODES_LIMIT)
+    return 200, {"episodes": [e.to_dict() for e in rows], "truncated": cut}
 
 
 def r_changes(h, q, body, now):
-    return 200, {"versions": h.store.versions(since_version=_q(q, "since_version", 0, int),
-                                             since_ts=_q(q, "since", 0.0, float))}
+    rows, cut = _newest(h.store.versions(since_version=_q(q, "since_version", 0, int),
+                                         since_ts=_q(q, "since", 0.0, float), limit=CHANGES_LIMIT + 1),
+                        CHANGES_LIMIT)
+    return 200, {"versions": rows, "truncated": cut}
 
 
 def r_summary(h, q, body, now):

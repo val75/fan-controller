@@ -138,10 +138,12 @@ class Store:
                  for i, c in enumerate(changes)])
         return version
 
-    def versions(self, since_version: int = 0, since_ts: float = 0) -> List[dict]:
+    def versions(self, since_version: int = 0, since_ts: float = 0, limit: Optional[int] = None) -> List[dict]:
+        """Oldest first; with a limit, the newest `limit` of them."""
         rows = self._read(
             "SELECT version, created_at, source, reason, data_json FROM threshold_versions "
-            "WHERE version > ? AND created_at >= ? ORDER BY version", (since_version, since_ts))
+            "WHERE version > ? AND created_at >= ? ORDER BY version DESC LIMIT ?",
+            (since_version, since_ts, -1 if limit is None else limit))[::-1]
         out = []
         for version, created_at, source, reason, data in rows:
             changes = [{"param": p, "from": json.loads(o), "to": json.loads(n)} for p, o, n in self._read(
@@ -216,9 +218,9 @@ class Store:
         if kinds:
             sql += f" AND kind IN ({','.join('?' * len(kinds))})"
             args += list(kinds)
-        sql += " ORDER BY ts, id LIMIT ?"
+        sql += " ORDER BY ts DESC, id DESC LIMIT ?"  # the newest `limit`, then returned oldest first
         args.append(limit)
-        return [{"ts": ts, "kind": kind, "detail": json.loads(d)} for ts, kind, d in self._read(sql, args)]
+        return [{"ts": ts, "kind": kind, "detail": json.loads(d)} for ts, kind, d in self._read(sql, args)[::-1]]
 
     def add_episode(self, ep: Episode) -> int:
         with self._lock, self._conn:
@@ -230,7 +232,7 @@ class Store:
         eps = [Episode.from_dict(json.loads(r[0])) for r in rows]
         if version is not None:
             eps = [e for e in eps if e.versions == [version]]
-        return eps[:limit]
+        return eps[-limit:] if limit > 0 else []  # the newest `limit`, oldest first
 
     # -- marks -------------------------------------------------------------------
 
