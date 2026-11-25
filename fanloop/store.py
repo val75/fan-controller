@@ -1,6 +1,7 @@
 """The loop's SQLite store: threshold versions, samples, events, episodes, marks
-and small key-value state (spec 5.5). One connection, one lock, WAL mode."""
+and small key-value state (spec 5.5). WAL mode; one writer connection under one lock."""
 import json
+import queue
 import sqlite3
 import sys
 import threading
@@ -12,6 +13,7 @@ from fanloop.readings import CardReading, IpmiReading
 from fanloop.thresholds import AmbientRule, Change, Thresholds
 
 DAY_S = 86400
+READERS = 4  # pooled read-only connections for the API
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS threshold_versions (
@@ -47,8 +49,13 @@ def _card(cards: Sequence[CardReading], index: int) -> Optional[CardReading]:
 
 
 class Store:
+    """Writes go through one connection under one lock. The API's large reads
+    (samples, events, episodes, versions) use a small pool of read-only connections,
+    which WAL lets run alongside a write, so a slow query never delays the loop."""
+
     def __init__(self, path: str, defaults: Thresholds):
         self._defaults = defaults
+        self._path = path
         self._lock = threading.RLock()
         self._conn: Optional[sqlite3.Connection] = sqlite3.connect(path, check_same_thread=False)
         if path != ":memory:":
@@ -56,9 +63,16 @@ class Store:
             self._conn.execute("PRAGMA synchronous=NORMAL")
         with self._conn:
             self._conn.executescript(_SCHEMA)
+        self._readers: List[sqlite3.Connection] = []   # every pooled connection, to close them
+        self._pool: "queue.LifoQueue[sqlite3.Connection]" = queue.LifoQueue()
+        self._readers_lock = threading.Lock()  # not the write lock: reads must never wait for it
         self.current()  # first start: store the starting thresholds as version 1
 
     def close(self) -> None:
+        with self._readers_lock:
+            for conn in self._readers:
+                conn.close()
+            self._readers.clear()
         with self._lock:
             if self._conn is not None:
                 self._conn.close()
@@ -66,6 +80,30 @@ class Store:
 
     def _q(self, sql: str, args: Sequence = ()) -> List[tuple]:
         return self._conn.execute(sql, args).fetchall()
+
+    def _read(self, sql: str, args: Sequence = ()) -> List[tuple]:
+        """A read that doesn't take the write lock (a :memory: database has only one connection)."""
+        if self._path == ":memory:":
+            with self._lock:
+                return self._q(sql, args)
+        conn = self._take_reader()
+        try:
+            return conn.execute(sql, args).fetchall()
+        finally:
+            self._pool.put(conn)
+
+    def _take_reader(self) -> sqlite3.Connection:
+        try:
+            return self._pool.get_nowait()
+        except queue.Empty:
+            pass
+        with self._readers_lock:
+            if len(self._readers) < READERS:
+                conn = sqlite3.connect(self._path, timeout=5, check_same_thread=False)
+                conn.execute("PRAGMA query_only=ON")
+                self._readers.append(conn)
+                return conn
+        return self._pool.get(timeout=10)  # all in use: wait for one (other readers, never the loop)
 
     # -- threshold versions ------------------------------------------------
 
@@ -101,18 +139,17 @@ class Store:
         return version
 
     def versions(self, since_version: int = 0, since_ts: float = 0) -> List[dict]:
-        with self._lock:
-            rows = self._q(
-                "SELECT version, created_at, source, reason, data_json FROM threshold_versions "
-                "WHERE version > ? AND created_at >= ? ORDER BY version", (since_version, since_ts))
-            out = []
-            for version, created_at, source, reason, data in rows:
-                changes = [{"param": p, "from": json.loads(o), "to": json.loads(n)} for p, o, n in self._q(
-                    "SELECT param, old_json, new_json FROM threshold_changes WHERE version = ? ORDER BY seq",
-                    (version,))]
-                out.append({"version": version, "created_at": created_at, "source": source, "reason": reason,
-                            "thresholds": json.loads(data), "changes": changes})
-            return out
+        rows = self._read(
+            "SELECT version, created_at, source, reason, data_json FROM threshold_versions "
+            "WHERE version > ? AND created_at >= ? ORDER BY version", (since_version, since_ts))
+        out = []
+        for version, created_at, source, reason, data in rows:
+            changes = [{"param": p, "from": json.loads(o), "to": json.loads(n)} for p, o, n in self._read(
+                "SELECT param, old_json, new_json FROM threshold_changes WHERE version = ? ORDER BY seq",
+                (version,))]
+            out.append({"version": version, "created_at": created_at, "source": source, "reason": reason,
+                        "thresholds": json.loads(data), "changes": changes})
+        return out
 
     def count_versions(self, source: str, since_ts: float) -> int:
         with self._lock:
@@ -146,14 +183,13 @@ class Store:
         if end <= start or max_points < 1:
             return []
         bucket = (end - start) / max_points
-        with self._lock:
-            rows = self._q(
-                "SELECT MIN(CAST((ts - ?) / ? AS INTEGER), ?) AS b, COUNT(*), "
-                "AVG(temp0), AVG(temp1), MAX(temp0), MAX(temp1), AVG(power0), AVG(power1), "
-                "AVG(util0), AVG(util1), AVG(inlet), AVG(exhaust), AVG(sys_power), "
-                "MAX(level), MAX(busy), MAX(throttled) "
-                "FROM samples WHERE ts >= ? AND ts <= ? GROUP BY b ORDER BY b",
-                (start, bucket, max_points - 1, start, end))
+        rows = self._read(
+            "SELECT MIN(CAST((ts - ?) / ? AS INTEGER), ?) AS b, COUNT(*), "
+            "AVG(temp0), AVG(temp1), MAX(temp0), MAX(temp1), AVG(power0), AVG(power1), "
+            "AVG(util0), AVG(util1), AVG(inlet), AVG(exhaust), AVG(sys_power), "
+            "MAX(level), MAX(busy), MAX(throttled) "
+            "FROM samples WHERE ts >= ? AND ts <= ? GROUP BY b ORDER BY b",
+            (start, bucket, max_points - 1, start, end))
         out = []
         for (b, n, t0, t1, t0max, t1max, p0, p1, u0, u1, inlet, exhaust, power, level, busy, thr) in rows:
             out.append({"ts": start + b * bucket, "n": n, "temp0": t0, "temp1": t1, "temp0_max": t0max,
@@ -182,8 +218,7 @@ class Store:
             args += list(kinds)
         sql += " ORDER BY ts, id LIMIT ?"
         args.append(limit)
-        with self._lock:
-            return [{"ts": ts, "kind": kind, "detail": json.loads(d)} for ts, kind, d in self._q(sql, args)]
+        return [{"ts": ts, "kind": kind, "detail": json.loads(d)} for ts, kind, d in self._read(sql, args)]
 
     def add_episode(self, ep: Episode) -> int:
         with self._lock, self._conn:
@@ -191,8 +226,7 @@ class Store:
                                       (ep.start, ep.end, json.dumps(ep.to_dict()))).lastrowid
 
     def episodes(self, since_ts: float = 0, version: Optional[int] = None, limit: int = 200) -> List[Episode]:
-        with self._lock:
-            rows = self._q("SELECT data_json FROM episodes WHERE start >= ? ORDER BY start, id", (since_ts,))
+        rows = self._read("SELECT data_json FROM episodes WHERE start >= ? ORDER BY start, id", (since_ts,))
         eps = [Episode.from_dict(json.loads(r[0])) for r in rows]
         if version is not None:
             eps = [e for e in eps if e.versions == [version]]

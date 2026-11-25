@@ -2,8 +2,10 @@ import http.client
 import json
 import os
 import shutil
+import socket
 import stat
 import tempfile
+import threading
 import time
 import unittest
 
@@ -271,6 +273,99 @@ class TestSocket(ApiTest):
 
     def test_socket_file_mode(self):
         self.assertEqual(stat.S_IMODE(os.stat(self.sock_path).st_mode), 0o660)
+
+
+class TestConnectionLimits(unittest.TestCase):
+    """The network side must not be able to take the loop's file descriptors or threads."""
+
+    def setUp(self):
+        self.store = Store(":memory:", load_defaults())
+        alerter = Alerter(FakeSender(), self.store)
+        service = Service(self.store, alerter, Marks(self.store), Holds(self.store), ReviewWatchdog(self.store),
+                          dry_run=True)
+        tmp = tempfile.mkdtemp(prefix="fl")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        self.tcp, self.unix = make_servers(service, self.store, "127.0.0.1", 0, os.path.join(tmp, "ctl.sock"),
+                                           TOKEN, None, request_timeout_s=0.3, max_connections=4)
+        serve((self.tcp, self.unix), poll_interval=0.05)
+        for server in (self.tcp, self.unix):
+            self.addCleanup(server.server_close)
+            self.addCleanup(server.shutdown)
+
+    def idle(self):
+        s = socket.create_connection(("127.0.0.1", self.tcp.server_address[1]), timeout=2)
+        self.addCleanup(s.close)
+        return s
+
+    def status(self):
+        conn = http.client.HTTPConnection("127.0.0.1", self.tcp.server_address[1], timeout=2)
+        try:
+            conn.request("GET", "/status")
+            return conn.getresponse().status
+        finally:
+            conn.close()
+
+    def test_an_idle_connection_is_closed(self):
+        s = self.idle()
+        self.assertEqual(s.recv(10), b"")  # closed by the server after request_timeout_s
+
+    def test_connections_over_the_cap_are_refused_and_the_server_recovers(self):
+        held = [self.idle() for _ in range(4)]
+        time.sleep(0.05)
+        extra = self.idle()
+        self.assertEqual(extra.recv(10), b"")  # over the cap: closed at once
+        time.sleep(0.5)  # the idle ones time out
+        self.assertEqual(self.status(), 200)
+        del held
+
+
+class TestReadsDontBlockTheLoop(unittest.TestCase):
+    def test_api_reads_do_not_wait_for_the_write_lock(self):
+        tmp = tempfile.mkdtemp(prefix="fl")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        store = Store(os.path.join(tmp, "fan.db"), load_defaults())
+        self.addCleanup(store.close)
+        now = time.time()
+        card = [CardReading(0, 50, 30, 0, 585, False, False, False)]
+        for i in range(50):
+            store.add_sample(now - i * 5, card, IpmiReading(14, 20, {}, 238), Level.OFF, False)
+            store.add_event(now - i, "level", {"i": i})
+        holding, release = threading.Event(), threading.Event()
+
+        def writer_busy():  # stands in for the loop in the middle of a write
+            with store._lock:
+                holding.set()
+                release.wait(5)
+        threading.Thread(target=writer_busy, daemon=True).start()
+        self.assertTrue(holding.wait(2))
+        results = {}
+
+        def read():
+            results["samples"] = store.samples(now - 300, now)
+            results["events"] = store.events(0)
+            results["episodes"] = store.episodes()
+            results["versions"] = store.versions()
+        reader = threading.Thread(target=read, daemon=True)
+        reader.start()
+        reader.join(2)
+        release.set()
+        self.assertFalse(reader.is_alive(), "API reads waited for the loop's write lock")
+        self.assertTrue(results["samples"])
+        self.assertEqual(len(results["events"]), 50)
+        self.assertEqual(results["versions"][0]["version"], 1)
+
+
+class TestReadConnectionsAreBounded(unittest.TestCase):
+    def test_many_short_lived_threads_share_a_few_read_connections(self):
+        tmp = tempfile.mkdtemp(prefix="fl")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        store = Store(os.path.join(tmp, "fan.db"), load_defaults())
+        self.addCleanup(store.close)
+        for _ in range(50):  # one thread per HTTP connection, as the servers do
+            t = threading.Thread(target=lambda: store.events(0))
+            t.start()
+            t.join()
+        self.assertLessEqual(len(store._readers), 4)
 
 
 class BrokenStatus(Service):

@@ -294,6 +294,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def store(self):
         return self.server.store
 
+    def setup(self):
+        self.timeout = getattr(self.server, "request_timeout_s", REQUEST_TIMEOUT_S)  # idle connections end
+        super().setup()
+
     def log_message(self, fmt, *args):  # the loop's events are its log
         pass
 
@@ -384,12 +388,42 @@ class Handler(http.server.BaseHTTPRequestHandler):
             pass  # the client went away
 
 
-class TcpServer(http.server.ThreadingHTTPServer):
+REQUEST_TIMEOUT_S = 10.0
+MAX_CONNECTIONS = 16
+
+
+class _Bounded:
+    """At most max_connections handled at once; more are closed at once. Each one's
+    socket times out after request_timeout_s idle. Together they keep a client that
+    opens connections and sends nothing from using up the loop's file descriptors."""
+    request_timeout_s = REQUEST_TIMEOUT_S
+    max_connections = MAX_CONNECTIONS
+
+    def process_request(self, request, client_address):
+        if not hasattr(self, "_slots"):
+            self._slots = threading.BoundedSemaphore(self.max_connections)
+        if not self._slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+
+class TcpServer(_Bounded, http.server.ThreadingHTTPServer):
     daemon_threads = True
     is_local = False
 
 
-class UnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+class UnixHTTPServer(_Bounded, socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     daemon_threads = True
     is_local = True
 
@@ -415,16 +449,22 @@ class UnixHTTPConnection(http.client.HTTPConnection):
 
 
 def make_servers(service, store, host: str, port: int, socket_path: str, write_token: str,
-                 socket_group: Optional[str]) -> Tuple[TcpServer, UnixHTTPServer]:
+                 socket_group: Optional[str], request_timeout_s: float = REQUEST_TIMEOUT_S,
+                 max_connections: int = MAX_CONNECTIONS) -> Tuple[TcpServer, UnixHTTPServer]:
     if os.path.exists(socket_path) and stat.S_ISSOCK(os.stat(socket_path).st_mode):
         os.unlink(socket_path)  # left over from a previous run
     tcp = TcpServer((host, port), Handler)
-    unix = UnixHTTPServer(socket_path, Handler)
-    os.chmod(socket_path, 0o660)
-    if socket_group:
-        shutil.chown(socket_path, group=socket_group)
+    try:
+        unix = UnixHTTPServer(socket_path, Handler)
+        os.chmod(socket_path, 0o660)
+        if socket_group:
+            shutil.chown(socket_path, group=socket_group)
+    except BaseException:
+        tcp.server_close()
+        raise
     for server in (tcp, unix):
         server.service, server.store, server.token = service, store, write_token
+        server.request_timeout_s, server.max_connections = request_timeout_s, max_connections
     return tcp, unix
 
 
