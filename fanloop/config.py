@@ -33,6 +33,7 @@ class Config:
     blind_hold_s: float = 30.0
     # Failure handling and health
     nvidia_fail_polls: int = 3
+    api_retry_s: float = 60.0  # how often to retry starting the API if it couldn't
     llama_health_url: str = "http://127.0.0.1:8080/health"
     # Backup to docks (an empty target disables the copy)
     backup_target: str = ""

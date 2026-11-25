@@ -328,7 +328,99 @@ class Loop:
             stop.wait(max(0.0, delay))
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+STARTUP_ALERT_EVERY_S = 1800.0
+_STARTUP_STAMP = "startup-failure-alerted"
+
+
+class ApiStarter:
+    """Starts the HTTP API without ever holding up fan control: if the port or the
+    socket can't be had (taken, a missing group), the loop runs without its API,
+    says so once, and keeps trying."""
+
+    def __init__(self, make, serve, alerter, wall: Callable[[], float]):
+        self.make, self.serve, self.alerter, self.wall = make, serve, alerter, wall
+        self.servers: Tuple = ()
+        self._lock = threading.Lock()
+        self._closed = False
+
+    def try_start(self) -> bool:
+        with self._lock:
+            if self._closed:
+                return True
+            try:
+                servers = self.make()
+            except Exception as e:
+                self.alerter.open_incident(
+                    "api", f"The loop's API couldn't start: {e!r}"[:300] + ". Fan control runs on; fanctl and "
+                           "Hermes can't reach the loop until it does. Retrying every minute.", self.wall())
+                return False
+            self.serve(servers)
+            self.servers = servers
+        self.alerter.close_incident("api", "The loop's API is up again.", self.wall())
+        return True
+
+    def keep_trying(self, stop: threading.Event, retry_s: float) -> None:
+        while not stop.wait(retry_s):
+            if self.try_start():
+                return
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            for server in self.servers:
+                server.shutdown()
+                server.server_close()
+            self.servers = ()
+
+
+def _stamp_paths(cfg) -> List[str]:
+    # /run first (tmpfs, writable even when the disk isn't), then the state directory
+    return [os.path.join(os.path.dirname(cfg.socket_path), _STARTUP_STAMP),
+            os.path.join(os.path.dirname(cfg.db_path), _STARTUP_STAMP)]
+
+
+def report_startup_failure(cfg, sender, error: BaseException, now: float) -> None:
+    """One direct Telegram message per STARTUP_ALERT_EVERY_S while startup keeps failing:
+    systemd restarts the loop every few seconds, and the Alerter may be what failed.
+    A stamp file remembers the last message across those restarts."""
+    from fanloop.alerts import PREFIX
+    print(f"fan loop can't start: {error!r}", file=sys.stderr)
+    for path in _stamp_paths(cfg):
+        try:
+            if now - os.path.getmtime(path) < STARTUP_ALERT_EVERY_S:
+                return
+        except OSError:
+            pass
+    for path in _stamp_paths(cfg):
+        try:
+            with open(path, "w") as f:
+                f.write(f"{now}\n")
+            os.utime(path, (now, now))
+            break
+        except OSError:
+            continue
+    else:  # nowhere to remember it: stay quiet rather than message on every restart
+        print("no stamp file could be written; not messaging", file=sys.stderr)
+        return
+    text = (f"The fan loop can't start: {error!r}"[:400] + ". systemd keeps retrying; the fans stay where they "
+            "are. Details: journalctl -u fan-controller")
+    try:
+        sender.send(PREFIX + text)
+    except Exception as e:
+        print(f"could not send to Telegram: {e!r}", file=sys.stderr)
+
+
+def _clear_startup_stamps(cfg) -> None:
+    for path in _stamp_paths(cfg):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def main(argv: Optional[List[str]] = None, sender=None, runner=None,
+         stop: Optional[threading.Event] = None) -> int:
+    """`sender`, `runner` and `stop` are for tests; systemd runs it with none of them."""
     from fanloop.alerts import Alerter, TelegramSender
     from fanloop.api import make_servers, serve
     from fanloop.busy import BusyDetector
@@ -347,44 +439,59 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="python3 -m fanloop.daemon")
     parser.add_argument("--config", required=True)
     args = parser.parse_args(argv)
-    cfg = load_config(args.config)
-    secrets = load_secrets(cfg.secrets_dir)
+    try:
+        cfg = load_config(args.config)
+        secrets = load_secrets(cfg.secrets_dir)
+    except Exception as e:  # nothing to message with yet: the journal has it
+        print(f"fan loop can't start: {e!r}", file=sys.stderr)
+        return 1
+    sender = sender or TelegramSender(secrets.telegram_token, secrets.telegram_chat_id)
 
-    store = Store(cfg.db_path, load_defaults())
-    runner = CommandRunner()
-    alerter = Alerter(TelegramSender(secrets.telegram_token, secrets.telegram_chat_id), store)
-    marks, holds, watchdog = Marks(store), Holds(store), ReviewWatchdog(store)
-    service = Service(store, alerter, marks, holds, watchdog, dry_run=cfg.dry_run)
-    controller = Controller(store.current()[1], ControlConfig(
-        blind_idle_power_w=cfg.blind_idle_power_w, blind_power_above_w=cfg.blind_power_above_w,
-        blind_hold_s=cfg.blind_hold_s))
-    sensors, offset = build_io(cfg, runner, time.monotonic)
-    loop = Loop(cfg, service, store, sensors, offset,
-                controller, BusyDetector(), EpisodeTracker(), alerter, marks, holds, watchdog,
-                mono=time.monotonic, wall=time.time, llama=lambda: llama_health(cfg.llama_health_url))
+    try:
+        store = Store(cfg.db_path, load_defaults())
+        runner = runner or CommandRunner()
+        alerter = Alerter(sender, store)
+        marks, holds, watchdog = Marks(store), Holds(store), ReviewWatchdog(store)
+        service = Service(store, alerter, marks, holds, watchdog, dry_run=cfg.dry_run)
+        controller = Controller(store.current()[1], ControlConfig(
+            blind_idle_power_w=cfg.blind_idle_power_w, blind_power_above_w=cfg.blind_power_above_w,
+            blind_hold_s=cfg.blind_hold_s))
+        sensors, offset = build_io(cfg, runner, time.monotonic)
+        loop = Loop(cfg, service, store, sensors, offset,
+                    controller, BusyDetector(), EpisodeTracker(), alerter, marks, holds, watchdog,
+                    mono=time.monotonic, wall=time.time, llama=lambda: llama_health(cfg.llama_health_url))
+        alerter.start()
+        loop.startup()
+    except Exception as e:
+        report_startup_failure(cfg, sender, e, time.time())
+        return 1
+    _clear_startup_stamps(cfg)
 
-    stop = threading.Event()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        signal.signal(sig, lambda *_: stop.set())
+    stop = stop or threading.Event()
+    previous = {}
+    if threading.current_thread() is threading.main_thread():
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            previous[sig] = signal.signal(sig, lambda *_: stop.set())
 
-    alerter.start()
-    loop.startup()
-    servers = make_servers(service, store, cfg.listen_host, cfg.listen_port, cfg.socket_path,
-                           secrets.write_token, cfg.socket_group or None)
-    serve(servers)
+    api = ApiStarter(lambda: make_servers(service, store, cfg.listen_host, cfg.listen_port, cfg.socket_path,
+                                          secrets.write_token, cfg.socket_group or None),
+                     serve, alerter, wall=time.time)
+    if not api.try_start():
+        threading.Thread(target=api.keep_trying, args=(stop, cfg.api_retry_s), name="api-start",
+                         daemon=True).start()
     sd_notify("READY=1")
     try:
         loop.run_forever(stop)
     finally:
         sd_notify("STOPPING=1")
-        for server in servers:
-            server.shutdown()
-            server.server_close()
+        stop.set()
+        api.close()
         alerter.drain(5)
         alerter.stop()
         store.close()
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

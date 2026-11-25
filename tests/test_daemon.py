@@ -513,6 +513,93 @@ class TestStepBudget(LoopTest):
         self.assertLessEqual(worst_step_s(Config()) + 30, WATCHDOG_SEC)
 
 
+class TestMain(unittest.TestCase):
+    """main() as systemd runs it, with a fake Telegram and fake commands."""
+
+    def setUp(self):
+        from tests.fakes import FakeRunner
+        self.dir = tempfile.mkdtemp(prefix="flm")
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        secrets = os.path.join(self.dir, "secrets")
+        os.mkdir(secrets)
+        for name, value in (("telegram_token", "1:x"), ("telegram_chat_id", "42"), ("write_token", "t" * 20)):
+            Path(secrets, name).write_text(value)
+        self.blocker = socket.socket()
+        self.blocker.bind(("127.0.0.1", 0))
+        self.addCleanup(self.blocker.close)
+        self.port = self.blocker.getsockname()[1]
+        self.settings = {"db_path": os.path.join(self.dir, "fan.db"), "listen_host": "127.0.0.1",
+                         "listen_port": self.port, "socket_path": os.path.join(self.dir, "ctl.sock"),
+                         "socket_group": "", "secrets_dir": secrets, "dry_run": True, "poll_s": 0.05,
+                         "llama_health_url": "http://127.0.0.1:9/health"}
+        self.sender = FakeSender()
+        self.runner = FakeRunner()
+
+    def run_main(self, seconds=0.5, **overrides):
+        from fanloop.daemon import main
+        path = os.path.join(self.dir, "config.json")
+        Path(path).write_text(json.dumps({**self.settings, **overrides}))
+        stop = threading.Event()
+        threading.Timer(seconds, stop.set).start()
+        return main(["--config", path], sender=self.sender, runner=self.runner, stop=stop)
+
+    def texts(self):
+        return [t[len(PREFIX):] for t in self.sender.sent]
+
+    def test_control_runs_when_the_api_cannot_bind(self):
+        self.blocker.listen()  # the port is taken
+        self.assertEqual(self.run_main(), 0)
+        import sqlite3
+        conn = sqlite3.connect(self.settings["db_path"])
+        self.addCleanup(conn.close)
+        self.assertGreater(conn.execute("SELECT COUNT(*) FROM samples").fetchone()[0], 3)
+        texts = self.texts()
+        self.assertTrue(any(t.startswith("Fan loop started") for t in texts), texts)
+        self.assertTrue(any(t.startswith("The loop's API couldn't start") for t in texts), texts)
+
+    def test_a_startup_failure_is_reported_once_not_on_every_restart(self):
+        self.blocker.close()
+        bad_db = os.path.join(self.dir, "no-such-dir", "fan.db")
+        self.assertEqual(self.run_main(db_path=bad_db), 1)
+        self.assertEqual(self.run_main(db_path=bad_db), 1)  # systemd restarting it
+        texts = self.texts()
+        self.assertEqual(len(texts), 1, texts)
+        self.assertTrue(texts[0].startswith("The fan loop can't start"), texts)
+
+    def test_the_api_starts_when_the_port_frees(self):
+        from fanloop.daemon import ApiStarter
+        attempts = []
+
+        class Server:
+            is_local = False
+
+            def shutdown(self):
+                pass
+
+            def server_close(self):
+                pass
+
+        def make():
+            attempts.append(1)
+            if len(attempts) < 3:
+                raise OSError(48, "Address already in use")
+            return (Server(),)
+        store = Store(":memory:", load_defaults())
+        alerter = Alerter(self.sender, store)
+        alerter.start()
+        self.addCleanup(alerter.stop)
+        starter = ApiStarter(make, serve=lambda servers: None, alerter=alerter, wall=time.time)
+        self.assertFalse(starter.try_start())
+        stop = threading.Event()
+        starter.keep_trying(stop, retry_s=0.01)
+        self.assertEqual(len(attempts), 3)
+        self.assertTrue(alerter.drain(5))
+        texts = self.texts()
+        self.assertEqual(len(texts), 2, texts)
+        self.assertTrue(texts[0].startswith("The loop's API couldn't start"))
+        self.assertEqual(texts[1], "The loop's API is up again.")
+
+
 class TestConfig(unittest.TestCase):
     def test_example_config(self):
         cfg = load_config(ROOT / "deploy" / "config.example.json")

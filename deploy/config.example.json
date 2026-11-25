@@ -19,6 +19,7 @@
   "blind_power_above_w": 50.0,
   "blind_hold_s": 30.0,
   "nvidia_fail_polls": 3,
+  "api_retry_s": 60.0,
   "llama_health_url": "http://127.0.0.1:8080/health",
   "backup_target": "",
   "backup_key": "/etc/fan-controller/secrets/docks_ed25519",
