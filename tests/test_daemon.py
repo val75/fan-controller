@@ -162,6 +162,24 @@ class TestStoreFailure(LoopTest):
         self.assertTrue(self.service.status()["health"]["store_ok"])
 
 
+class TestNoFalseAllClear(LoopTest):
+    def test_a_second_slowdown_soon_after_a_recovery_is_reported(self):
+        # The reviewer's probe: throttling, recovery, throttling again 7 minutes later.
+        self.make()
+        self.messages()
+        self.sensors.cards = cards(76, busy=True, sw=True)
+        self.run_for(30)
+        self.sensors.cards = cards(60, busy=True)
+        self.run_for(310)
+        self.sensors.cards = cards(76, busy=True, sw=True)
+        self.run_for(600)
+        msgs = self.messages()
+        slowdowns = [m for m in msgs if m.startswith("Thermal slowdown")]
+        self.assertEqual(len(slowdowns), 2, msgs)
+        self.assertIn("ongoing since", slowdowns[1])
+        self.assertFalse(msgs[-1].startswith("No thermal slowdown"), msgs)
+
+
 class TestRestartMidIncident(LoopTest):
     """Incidents survive a restart in the store; what closes them must not depend on
     memory that didn't survive, or that kind's next real alert is swallowed."""

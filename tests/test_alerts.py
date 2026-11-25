@@ -102,6 +102,43 @@ class TestIncidents(AlerterTest):
         self.assertEqual(self.sent(), [PREFIX + "earlier"])
 
 
+class TestSuppressedIncidents(AlerterTest):
+    """A recovery followed by a rate-limited new incident would leave the user's last
+    message saying all is well. A suppressed incident that lasts is sent late."""
+
+    def since(self, ts):
+        return time.strftime("%H:%M", time.localtime(ts))
+
+    def test_a_suppressed_incident_that_lasts_is_sent_late(self):
+        self.alerter.open_incident("slowdown", "slowdown 1", T0)
+        self.alerter.close_incident("slowdown", "over 1", T0 + 60)
+        self.alerter.open_incident("slowdown", "slowdown 2", T0 + 420)  # inside the 30-min limit
+        self.alerter.tick(T0 + 600)  # open for 3 min: still quiet
+        self.alerter.tick(T0 + 720)  # open for 5 min: sent now
+        self.alerter.tick(T0 + 780)
+        self.alerter.close_incident("slowdown", "over 2", T0 + 900)
+        self.assertEqual(self.sent(), [PREFIX + "slowdown 1", PREFIX + "over 1",
+                                       PREFIX + f"slowdown 2 (ongoing since {self.since(T0 + 420)})",
+                                       PREFIX + "over 2"])
+
+    def test_a_short_suppressed_incident_stays_quiet(self):
+        self.alerter.open_incident("nvidia", "nvidia 1", T0)
+        self.alerter.close_incident("nvidia", "back 1", T0 + 20)
+        self.alerter.open_incident("nvidia", "nvidia 2", T0 + 40)
+        self.alerter.tick(T0 + 200)
+        self.alerter.close_incident("nvidia", "back 2", T0 + 220)
+        self.alerter.tick(T0 + 600)
+        self.assertEqual(self.sent(), [PREFIX + "nvidia 1", PREFIX + "back 1"])
+
+    def test_a_late_alert_survives_a_restart(self):
+        self.alerter.alert("racadm", "earlier", T0)
+        self.alerter.open_incident("racadm", "racadm failing", T0 + 60)
+        again = self.make()
+        again.tick(T0 + 400)
+        self.assertEqual(self.sent(again), [PREFIX + "earlier",
+                                            PREFIX + f"racadm failing (ongoing since {self.since(T0 + 60)})"])
+
+
 def break_store(store, names=("add_event", "kv_get", "kv_set")):
     import sqlite3
 

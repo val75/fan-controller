@@ -38,14 +38,20 @@ class Alerter:
     Rate limits and open incidents live in memory and are written through to the
     store, so they survive restarts. The store is never needed to send: a message
     is queued before anything is written, and a failing store only loses the record.
+
+    An incident whose alert the rate limit suppressed is sent late by tick() once it
+    has lasted `persist_s`: otherwise a recovery message followed by a suppressed new
+    incident would leave the user believing all is well. Short repeats stay quiet.
     None of the public methods raise."""
 
-    def __init__(self, sender, store, rate_limit_s: float = 1800, max_queue: int = 100, retry_s: float = 60):
+    def __init__(self, sender, store, rate_limit_s: float = 1800, max_queue: int = 100, retry_s: float = 60,
+                 persist_s: float = 300):
         self.sender = sender
         self.store = store
         self.rate_limit_s = rate_limit_s
         self.max_queue = max_queue
         self.retry_s = retry_s
+        self.persist_s = persist_s
         self._queue: Deque[str] = collections.deque()
         self._in_flight: Optional[str] = None
         self._cond = threading.Condition()
@@ -179,8 +185,28 @@ class Alerter:
                 self._load()
                 if kind in self._incidents:
                     return
-                self._incidents[kind] = {"opened_at": now, "alerted": self.alert(kind, text, now)}
+                self._incidents[kind] = {"opened_at": now, "alerted": self.alert(kind, text, now), "text": text}
                 self._save(_INCIDENTS, self._incidents)
+        except Exception:
+            pass
+
+    def tick(self, now: float) -> None:
+        """Send the alert of every suppressed incident that has now lasted persist_s."""
+        try:
+            with self._state_lock:
+                self._load()
+                due = [(kind, inc) for kind, inc in self._incidents.items()
+                       if not inc.get("alerted") and now - inc.get("opened_at", now) >= self.persist_s]
+                for kind, inc in due:
+                    since = time.strftime("%H:%M", time.localtime(inc["opened_at"]))
+                    text = f"{inc.get('text') or kind} (ongoing since {since})"
+                    self._enqueue(text)
+                    inc["alerted"] = True
+                    self._last[kind] = now
+                    self._event("alert", {"kind": kind, "text": text, "suppressed": False, "late": True}, now)
+                if due:
+                    self._save(_INCIDENTS, self._incidents)
+                    self._save(_ALERT_LAST, self._last)
         except Exception:
             pass
 

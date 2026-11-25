@@ -121,6 +121,7 @@ class Loop:
         for name, part in (("gpus", self._gpus), ("ipmi", self._read_ipmi), ("busy", self._update_busy),
                            ("hold", self._update_hold), ("control", self._control),
                            ("slowdown", self._check_slowdown), ("max", self._check_max),
+                           ("alerts", lambda mono, wall: self.alerter.tick(wall)),
                            ("episodes", self._record_episode), ("sample", self._record_sample),
                            ("reviews", self._reviews), ("prune", self._prune), ("status", self._publish)):
             try:
