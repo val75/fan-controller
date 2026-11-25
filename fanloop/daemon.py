@@ -108,6 +108,7 @@ class Loop:
         if level is None:
             self._event(wall, "racadm-read-error", {"error": (error or "")[:300]})
         self._next_offset_read = mono + self.cfg.offset_read_every_s
+        self._slowdown_seen = mono  # a slowdown incident left open by an earlier run closes after 5 quiet minutes
         self._event(wall, "loop-start", {"offset": _name(level), "dry_run": self.cfg.dry_run,
                                                   "version": version})
         self.alerter.alert("restart", f"Fan loop started: offset {_name(level)}, "
@@ -175,22 +176,20 @@ class Loop:
         self._last_reason = decision.reason
         target = decision.level
 
+        if decision.reason == "emergency":  # also when the fans already are at Max (a hold, by hand)
+            hotter = self.controller.hotter_c(self._cards, self.controller.cfg.single_card1_offset_c)
+            flags = any(c.sw_thermal or c.hw_thermal for c in self._cards)
+            why = "thermal slowdown" if flags else f"hotter card at {hotter:g}°C"
+            self.alerter.open_incident("emergency", f"Emergency: {why}. Fans to Max.", wall)  # once per incident
+
         if current is None or target != current or self._set_failed:
             first_try = target != self._logged_target or not self._set_failed
-            if decision.reason == "emergency" and current != Level.MAX:
-                hotter = self.controller.hotter_c(self._cards, self.controller.cfg.single_card1_offset_c)
-                flags = any(c.sw_thermal or c.hw_thermal for c in self._cards)
-                why = "thermal slowdown" if flags else f"hotter card at {hotter:g}°C"
-                self.alerter.open_incident("emergency", f"Emergency: {why}. Fans to Max.", wall)
             # The set comes first: nothing about recording may delay or prevent it.
             result = self.offset.set(target)
             if first_try:
                 self._event(wall, "level", {"from": _name(current), "to": _name(target), "reason": decision.reason})
                 self._logged_target = target
             if result.ok:
-                if current == Level.MAX and target != Level.MAX:
-                    self.alerter.close_incident("emergency", f"Emergency over: fans down from Max to "
-                                                             f"{target.name.capitalize()}.", wall)
                 self.current_level = target
                 self._set_failed = False
                 self._health["racadm_ok"] = True
@@ -218,12 +217,19 @@ class Loop:
                                                     "Use fanctl hold to keep the fans higher.", wall)
                 self.current_level = level
 
+        # Closed by the state now, not by a transition this process saw: an incident
+        # left open by an earlier run closes too (a no-op when none is open). Over means
+        # the rule no longer asks for Max and the fans have left it, not a failed set.
+        if (decision.reason != "emergency" and self.current_level is not None
+                and self.current_level != Level.MAX):
+            self.alerter.close_incident("emergency", f"Emergency over: fans down from Max to "
+                                                     f"{self.current_level.name.capitalize()}.", wall)
+
     def _check_slowdown(self, mono, wall):
         slow = [c for c in self._cards if c.sw_thermal or c.hw_thermal]
         if slow:
-            if self._slowdown_seen is None:
-                c = slow[0]
-                self.alerter.open_incident("slowdown", f"Thermal slowdown on card {c.index} at {c.temp_c:g}°C.", wall)
+            c = slow[0]
+            self.alerter.open_incident("slowdown", f"Thermal slowdown on card {c.index} at {c.temp_c:g}°C.", wall)
             self._slowdown_seen = mono
         elif self._slowdown_seen is not None and mono - self._slowdown_seen >= _SLOWDOWN_CLEAR_S:
             self._slowdown_seen = None
@@ -232,10 +238,9 @@ class Loop:
     def _check_max(self, mono, wall):
         hotter = self.controller.hotter_c(self._cards, self.controller.cfg.single_card1_offset_c)
         if self.current_level != Level.MAX:
-            if self._max_since is not None:
-                self._max_since = None
-                self._hot_history.clear()
-                self.alerter.close_incident("max-not-enough", "Left Max: the cards are cooling.", wall)
+            self._max_since = None
+            self._hot_history.clear()
+            self.alerter.close_incident("max-not-enough", "Left Max: the cards are cooling.", wall)
             return
         if self._max_since is None:
             self._max_since = mono

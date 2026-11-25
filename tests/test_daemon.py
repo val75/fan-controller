@@ -162,6 +162,68 @@ class TestStoreFailure(LoopTest):
         self.assertTrue(self.service.status()["health"]["store_ok"])
 
 
+class TestRestartMidIncident(LoopTest):
+    """Incidents survive a restart in the store; what closes them must not depend on
+    memory that didn't survive, or that kind's next real alert is swallowed."""
+
+    def restart(self, start_level):
+        self.messages()  # let the old alerter finish
+        self.make(start_level=start_level, store=self.store)
+        self.messages()
+
+    def test_slowdown_open_across_a_restart_closes_and_the_next_one_alerts(self):
+        self.make()
+        self.sensors.cards = cards(76, busy=True, sw=True)
+        self.run_for(20)
+        self.restart(Level.MAX)
+        self.sensors.cards = cards(60, busy=True)
+        self.run_for(310)
+        self.assertIn("No thermal slowdown for 5 minutes.", self.messages())
+        self.run_for(1800)
+        self.sensors.cards = cards(76, busy=True, sw=True)
+        self.run_for(10)
+        self.assertEqual(sum(m.startswith("Thermal slowdown") for m in self.messages()), 1)
+
+    def test_emergency_open_across_a_restart_closes_when_not_at_max(self):
+        self.make()
+        self.sensors.cards = cards(82, busy=True)
+        self.run_for(10)
+        self.restart(Level.HIGH)
+        self.sensors.cards = cards(60, busy=True)
+        self.run_for(10)
+        self.assertTrue(any(m.startswith("Emergency over") for m in self.messages()))
+        self.run_for(1800)
+        self.sensors.cards = cards(82, busy=True)
+        self.run_for(10)
+        self.assertEqual(sum(m.startswith("Emergency:") for m in self.messages()), 1)
+
+    def test_emergency_reached_while_already_at_max_alerts(self):
+        self.make(start_level=Level.MAX)
+        self.messages()
+        self.sensors.cards = cards(82, busy=True)
+        self.run_for(10)
+        self.assertEqual(self.offset.sets, [])
+        self.assertTrue(any(m.startswith("Emergency:") for m in self.messages()))
+
+    def test_emergency_with_a_failing_set_is_not_called_over(self):
+        self.make(start_level=Level.HIGH)
+        self.messages()
+        self.offset.fail_sets = 100
+        self.sensors.cards = cards(82, busy=True)
+        self.run_for(30)
+        msgs = self.messages()
+        self.assertTrue(any(m.startswith("Emergency:") for m in msgs))
+        self.assertFalse(any(m.startswith("Emergency over") for m in msgs), msgs)
+
+    def test_max_not_enough_open_across_a_restart_closes_when_not_at_max(self):
+        self.make()
+        self.alerter.open_incident("max-not-enough", "At Max and still rising", self.clock.wall)
+        self.restart(Level.HIGH)
+        self.sensors.cards = cards(60, busy=True)
+        self.run_for(10)
+        self.assertIn("Left Max: the cards are cooling.", self.messages())
+
+
 class TestStartup(LoopTest):
     def test_one_restart_alert(self):
         self.make()
