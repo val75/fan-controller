@@ -1,0 +1,13 @@
+[Unit]
+Description=Back up the fan loop's database (local weekday copy, then docks)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=fanloop
+Group=fanloop
+Environment=PYTHONPATH=/opt/fan-controller
+ExecStart=/usr/bin/python3 -m fanloop.backup --config /etc/fan-controller/config.json
+Nice=10
+IOSchedulingClass=idle

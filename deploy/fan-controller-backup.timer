@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly backup of the fan loop's database
+
+[Timer]
+OnCalendar=*-*-* 03:30
+RandomizedDelaySec=10m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
