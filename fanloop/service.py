@@ -145,19 +145,22 @@ class Service:
     def status(self, now: Optional[float] = None) -> Dict:
         now = time.time() if now is None else now
         with self._lock:
-            version, t = self.store.current()
-            hold = self.holds.current(now)
             out = dict(self._snapshot)
-            out.update({
-                "version": version,
-                "thresholds": t.to_dict(),
-                "hold": None if hold is None else
-                {"level": hold.level.name.lower(), "since": hold.since, "until": hold.until},
-                "open_marks": self.store.marks_open(),
-                "last_review_ok_at": self.store.kv_get("last_review_ok_at"),
-                "review_watchdog_muted": self.watchdog.muted(now),
-                "dry_run": self.dry_run,
-            })
+            out["dry_run"] = self.dry_run
+            try:  # the loop's own snapshot still answers when the database doesn't
+                version, t = self.store.current()
+                hold = self.holds.current(now)
+                out.update({
+                    "version": version,
+                    "thresholds": t.to_dict(),
+                    "hold": None if hold is None else
+                    {"level": hold.level.name.lower(), "since": hold.since, "until": hold.until},
+                    "open_marks": self.store.marks_open(),
+                    "last_review_ok_at": self.store.kv_get("last_review_ok_at"),
+                    "review_watchdog_muted": self.watchdog.muted(now),
+                })
+            except Exception as e:
+                out["store_error"] = repr(e)[:300]
             return out
 
     def summary(self, since: float, until: float) -> Dict:

@@ -8,7 +8,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
-from typing import Deque, Optional
+from typing import Deque, Dict, Optional
 
 PREFIX = "[t4 fans] "
 _ALERT_LAST = "alert_last"
@@ -34,7 +34,10 @@ class TelegramSender:
 
 class Alerter:
     """Rate-limited alerts, unlimited notifications and incidents, all queued.
-    Rate limits and open incidents are kept in the store, so they survive restarts.
+
+    Rate limits and open incidents live in memory and are written through to the
+    store, so they survive restarts. The store is never needed to send: a message
+    is queued before anything is written, and a failing store only loses the record.
     None of the public methods raise."""
 
     def __init__(self, sender, store, rate_limit_s: float = 1800, max_queue: int = 100, retry_s: float = 60):
@@ -50,6 +53,9 @@ class Alerter:
         self._thread: Optional[threading.Thread] = None
         self._dropped = 0
         self._failures = 0
+        self._state_lock = threading.RLock()
+        self._last: Optional[Dict[str, float]] = None  # loaded from the store on first use
+        self._incidents: Dict[str, dict] = {}
 
     # -- the background sender ------------------------------------------------------
 
@@ -118,9 +124,26 @@ class Alerter:
         if dropped:
             self._event("telegram-dropped", {"total_dropped": self._dropped})
 
-    def _event(self, kind: str, detail: dict) -> None:
+    def _event(self, kind: str, detail: dict, now: Optional[float] = None) -> None:
         try:  # the sender thread has no caller's `now`, so it reads the clock itself
-            self.store.add_event(time.time(), kind, detail)
+            self.store.add_event(time.time() if now is None else now, kind, detail)
+        except Exception:
+            pass
+
+    def _load(self) -> None:
+        """The persisted state, read once. A store that can't be read starts us empty."""
+        if self._last is not None:
+            return
+        try:
+            last = dict(self.store.kv_get(_ALERT_LAST, {}) or {})
+            incidents = dict(self.store.kv_get(_INCIDENTS, {}) or {})
+        except Exception:
+            last, incidents = {}, {}
+        self._last, self._incidents = last, incidents
+
+    def _save(self, key: str, value: dict) -> None:
+        try:
+            self.store.kv_set(key, value)
         except Exception:
             pass
 
@@ -129,45 +152,47 @@ class Alerter:
     def alert(self, kind: str, text: str, now: float) -> bool:
         """Send unless the same kind was sent within rate_limit_s. False if suppressed."""
         try:
-            last = self.store.kv_get(_ALERT_LAST, {}) or {}
-            suppressed = kind in last and now - last[kind] < self.rate_limit_s
-            self.store.add_event(now, "alert", {"kind": kind, "text": text, "suppressed": suppressed})
-            if suppressed:
-                return False
-            last[kind] = now
-            self.store.kv_set(_ALERT_LAST, last)
-            self._enqueue(text)
-            return True
+            with self._state_lock:
+                self._load()
+                suppressed = kind in self._last and now - self._last[kind] < self.rate_limit_s
+                if not suppressed:
+                    self._last[kind] = now
+                    self._enqueue(text)
+                    self._save(_ALERT_LAST, self._last)
+            self._event("alert", {"kind": kind, "text": text, "suppressed": suppressed}, now)
+            return not suppressed
         except Exception:
             return False
 
     def notify(self, text: str, now: float) -> None:
         """Always sent: threshold changes, holds, reminders, recoveries."""
         try:
-            self.store.add_event(now, "alert", {"kind": "notify", "text": text, "suppressed": False})
             self._enqueue(text)
+            self._event("alert", {"kind": "notify", "text": text, "suppressed": False}, now)
         except Exception:
             pass
 
     def open_incident(self, kind: str, text: str, now: float) -> None:
         """One alert per incident, however often the problem is seen."""
         try:
-            incidents = self.store.kv_get(_INCIDENTS, {}) or {}
-            if kind in incidents:
-                return
-            incidents[kind] = {"opened_at": now, "alerted": self.alert(kind, text, now)}
-            self.store.kv_set(_INCIDENTS, incidents)
+            with self._state_lock:
+                self._load()
+                if kind in self._incidents:
+                    return
+                self._incidents[kind] = {"opened_at": now, "alerted": self.alert(kind, text, now)}
+                self._save(_INCIDENTS, self._incidents)
         except Exception:
             pass
 
     def close_incident(self, kind: str, text: str, now: float) -> None:
         """One recovery message, and only if the user was told about the incident."""
         try:
-            incidents = self.store.kv_get(_INCIDENTS, {}) or {}
-            incident = incidents.pop(kind, None)
-            if incident is None:
-                return
-            self.store.kv_set(_INCIDENTS, incidents)
+            with self._state_lock:
+                self._load()
+                incident = self._incidents.pop(kind, None)
+                if incident is None:
+                    return
+                self._save(_INCIDENTS, self._incidents)
             if incident.get("alerted"):
                 self.notify(text, now)
         except Exception:

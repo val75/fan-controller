@@ -127,6 +127,40 @@ class LoopTest(unittest.TestCase):
         return [e["detail"] for e in self.store.events(0, kinds=[kind], limit=5000)]
 
 
+STORE_METHODS = ("add_event", "add_sample", "add_episode", "kv_get", "kv_set", "current", "prune",
+                 "marks_open", "mark_close", "mark_get")
+
+
+def break_store(store, names=STORE_METHODS):
+    import sqlite3
+
+    def fail(*args, **kwargs):
+        raise sqlite3.OperationalError("database or disk is full")
+    for name in names:
+        setattr(store, name, fail)
+    return lambda: [delattr(store, name) for name in names]
+
+
+class TestStoreFailure(LoopTest):
+    def test_control_and_alerts_go_on_when_the_store_fails(self):
+        self.make(start_level=Level.LOW)
+        self.messages()
+        repair = break_store(self.store)
+        self.sensors.cards = cards(85, busy=True, sw=True)
+        self.run_for(60)
+        self.assertEqual(self.offset.sets[:1], [Level.MAX])
+        status = self.service.status()
+        self.assertFalse(status["health"]["store_ok"])
+        self.assertEqual(status["level"], "max")
+        msgs = self.messages()
+        self.assertTrue(any(m.startswith("Emergency") for m in msgs), msgs)
+        self.assertTrue(any(m.startswith("The loop can't use its database") for m in msgs), msgs)
+        repair()
+        self.run_for(10)
+        self.assertIn("The loop's database works again.", self.messages())
+        self.assertTrue(self.service.status()["health"]["store_ok"])
+
+
 class TestStartup(LoopTest):
     def test_one_restart_alert(self):
         self.make()

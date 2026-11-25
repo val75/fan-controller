@@ -102,6 +102,36 @@ class TestIncidents(AlerterTest):
         self.assertEqual(self.sent(), [PREFIX + "earlier"])
 
 
+def break_store(store, names=("add_event", "kv_get", "kv_set")):
+    import sqlite3
+
+    def fail(*args, **kwargs):
+        raise sqlite3.OperationalError("database or disk is full")
+    for name in names:
+        setattr(store, name, fail)
+
+
+class TestStoreDown(AlerterTest):
+    def test_alerts_still_go_out_when_the_store_fails(self):
+        self.alerter.alert("restart", "started", T0)
+        break_store(self.store)
+        self.assertTrue(self.alerter.alert("emergency", "hot", T0 + 10))
+        self.assertFalse(self.alerter.alert("emergency", "hot again", T0 + 20))  # the limit holds in memory
+        self.alerter.open_incident("racadm", "racadm failing", T0 + 30)
+        self.alerter.open_incident("racadm", "racadm failing", T0 + 35)
+        self.alerter.close_incident("racadm", "racadm back", T0 + 40)
+        self.alerter.notify("note", T0 + 50)
+        self.assertEqual(self.sent(), [PREFIX + "started", PREFIX + "hot", PREFIX + "racadm failing",
+                                       PREFIX + "racadm back", PREFIX + "note"])
+
+    def test_store_broken_from_the_start(self):
+        break_store(self.store)
+        alerter = self.make()
+        self.assertTrue(alerter.alert("restart", "started", T0))
+        alerter.open_incident("nvidia", "nvidia failing", T0 + 1)
+        self.assertEqual(self.sent(alerter), [PREFIX + "started", PREFIX + "nvidia failing"])
+
+
 class TestTelegramDown(AlerterTest):
     def test_bounded_queue_and_order(self):
         alerter = self.make(retry_s=0.01, max_queue=100)

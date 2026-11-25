@@ -58,12 +58,20 @@ class Loop:
         self._slowdown_seen: Optional[float] = None
         self._max_since: Optional[float] = None
         self._hot_history: Deque[Tuple[float, float]] = collections.deque()
-        self._health = {"nvidia_ok": False, "ipmi_ok": False, "racadm_ok": False}
+        self._health = {"nvidia_ok": False, "ipmi_ok": False, "racadm_ok": False, "store_ok": True}
         # filled each step
         self._cards: List[CardReading] = []
         self._busy = False
         self._hold = None
         self._version = 1
+
+    def _event(self, wall: float, kind: str, detail: dict) -> None:
+        """Recording is best-effort: a failing database must never stop control or alerts.
+        The sample written every step is what reports the database's health."""
+        try:
+            self.store.add_event(wall, kind, detail)
+        except Exception:
+            pass
 
     # -- startup -------------------------------------------------------------------------------
 
@@ -76,9 +84,9 @@ class Loop:
         self.current_level = level
         self._health["racadm_ok"] = level is not None
         if level is None:
-            self.store.add_event(wall, "racadm-read-error", {"error": (error or "")[:300]})
+            self._event(wall, "racadm-read-error", {"error": (error or "")[:300]})
         self._next_offset_read = mono + self.cfg.offset_read_every_s
-        self.store.add_event(wall, "loop-start", {"offset": _name(level), "dry_run": self.cfg.dry_run,
+        self._event(wall, "loop-start", {"offset": _name(level), "dry_run": self.cfg.dry_run,
                                                   "version": version})
         self.alerter.alert("restart", f"Fan loop started: offset {_name(level)}, "
                                       f"dry-run {'on' if self.cfg.dry_run else 'off'}, thresholds v{version}", wall)
@@ -95,11 +103,8 @@ class Loop:
             try:
                 part(mono, wall)
             except Exception as e:
-                try:
-                    self.store.add_event(wall, "loop-error", {"part": name, "error": repr(e)[:300]})
-                    self.alerter.alert("loop-error", f"Fan loop error in {name}: {e!r}"[:400], wall)
-                except Exception:
-                    pass
+                self._event(wall, "loop-error", {"part": name, "error": repr(e)[:300]})
+                self.alerter.alert("loop-error", f"Fan loop error in {name}: {e!r}"[:400], wall)
 
     def _gpus(self, mono, wall):
         self._cards = []
@@ -149,16 +154,17 @@ class Loop:
         target = decision.level
 
         if current is None or target != current or self._set_failed:
-            if target != self._logged_target or not self._set_failed:
-                self.store.add_event(wall, "level", {"from": _name(current), "to": _name(target),
-                                                     "reason": decision.reason})
-                self._logged_target = target
+            first_try = target != self._logged_target or not self._set_failed
             if decision.reason == "emergency" and current != Level.MAX:
                 hotter = self.controller.hotter_c(self._cards, self.controller.cfg.single_card1_offset_c)
                 flags = any(c.sw_thermal or c.hw_thermal for c in self._cards)
                 why = "thermal slowdown" if flags else f"hotter card at {hotter:g}°C"
                 self.alerter.open_incident("emergency", f"Emergency: {why}. Fans to Max.", wall)
+            # The set comes first: nothing about recording may delay or prevent it.
             result = self.offset.set(target)
+            if first_try:
+                self._event(wall, "level", {"from": _name(current), "to": _name(target), "reason": decision.reason})
+                self._logged_target = target
             if result.ok:
                 if current == Level.MAX and target != Level.MAX:
                     self.alerter.close_incident("emergency", f"Emergency over: fans down from Max to "
@@ -173,7 +179,7 @@ class Loop:
                 self._health["racadm_ok"] = False
                 if result.level is not None:
                     self.current_level = result.level
-                self.store.add_event(wall, "racadm-error", {"target": _name(target), "error": (result.error or "")[:300]})
+                self._event(wall, "racadm-error", {"target": _name(target), "error": (result.error or "")[:300]})
                 self.alerter.open_incident("racadm", f"racadm couldn't set {_name(target)} after "
                                                      f"{result.attempts} tries: {(result.error or '')[:200]}. "
                                                      "Retrying every poll.", wall)
@@ -182,9 +188,9 @@ class Loop:
             level, error = self.offset.read()
             self._health["racadm_ok"] = level is not None
             if level is None:
-                self.store.add_event(wall, "racadm-read-error", {"error": (error or "")[:300]})
+                self._event(wall, "racadm-read-error", {"error": (error or "")[:300]})
             elif level != current:
-                self.store.add_event(wall, "manual-change", {"loop": _name(current), "found": _name(level)})
+                self._event(wall, "manual-change", {"loop": _name(current), "found": _name(level)})
                 self.alerter.alert("manual-change", f"Fan offset changed outside the loop: {_name(level)} "
                                                     f"(the loop had {_name(current)}). Taking control back. "
                                                     "Use fanctl hold to keep the fans higher.", wall)
@@ -231,11 +237,21 @@ class Loop:
                                  self._version, self.marks.active(wall), self._hold.level if self._hold else None)
         if ep is not None:
             self.store.add_episode(ep)
-            self.store.add_event(wall, "episode", {"start": ep.start, "duration_s": ep.duration_s,
+            self._event(wall, "episode", {"start": ep.start, "duration_s": ep.duration_s,
                                                    "peak_c": max(ep.peak_c.values(), default=None)})
 
     def _record_sample(self, mono, wall):
-        self.store.add_sample(wall, self._cards, self._ipmi, self.current_level, self._busy)
+        try:
+            self.store.add_sample(wall, self._cards, self._ipmi, self.current_level, self._busy)
+        except Exception as e:
+            self._health["store_ok"] = False
+            self.alerter.open_incident(
+                "store", f"The loop can't use its database: {e!r}"[:300] + ". Fan control goes on with the "
+                         "last thresholds it read; nothing is being recorded.", wall)
+            return
+        if not self._health["store_ok"]:
+            self._health["store_ok"] = True
+            self.alerter.close_incident("store", "The loop's database works again.", wall)
 
     def _reviews(self, mono, wall):
         self.marks.expire(wall)
