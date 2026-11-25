@@ -181,7 +181,8 @@ class Loop:
             hotter = self.controller.hotter_c(self._cards, self.controller.cfg.single_card1_offset_c)
             flags = any(c.sw_thermal or c.hw_thermal for c in self._cards)
             why = "thermal slowdown" if flags else f"hotter card at {hotter:g}°C"
-            self.alerter.open_incident("emergency", f"Emergency: {why}. Fans to Max.", wall)  # once per incident
+            action = "Dry-run: the fans were not changed." if self.cfg.dry_run else "Fans to Max."
+            self.alerter.open_incident("emergency", f"Emergency: {why}. {action}", wall)  # once per incident
 
         if current is None or target != current or self._set_failed:
             first_try = target != self._logged_target or not self._set_failed

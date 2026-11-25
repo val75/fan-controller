@@ -43,6 +43,11 @@ class AlerterTest(unittest.TestCase):
 
 
 class TestRateLimit(AlerterTest):
+    def test_a_clock_that_jumps_back_does_not_silence_alerts(self):
+        self.assertTrue(self.alerter.alert("emergency", "80°C", T0))
+        self.assertTrue(self.alerter.alert("emergency", "after the clock went back", T0 - 3600))
+        self.assertFalse(self.alerter.alert("emergency", "within the limit again", T0 - 3500))
+
     def test_same_kind_within_window(self):
         self.assertTrue(self.alerter.alert("emergency", "80°C", T0))
         self.assertFalse(self.alerter.alert("emergency", "81°C", T0 + 1799))

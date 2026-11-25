@@ -123,6 +123,13 @@ class TestCommandRunner(unittest.TestCase):
             self.assertFalse(later.skipped)
             self.assertTrue(later.timed_out)
 
+    def test_output_that_is_not_utf8_is_still_returned(self):
+        runner = CommandRunner()
+        r = runner.run(("/bin/sh", "-c", r"printf 'GPU \377 ok\n'"), 5)
+        self.assertTrue(r.ok)
+        self.assertEqual(r.stdout, "GPU � ok\n")
+        self.assertEqual(runner.stuck_count(), 0)
+
     def test_ok(self):
         r = CommandRunner().run(("/bin/echo", "hi"), 5)
         self.assertTrue(r.ok)

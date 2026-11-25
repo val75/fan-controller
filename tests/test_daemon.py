@@ -346,6 +346,15 @@ class TestOffsetProblems(LoopTest):
         self.assertEqual(self.events("manual-change"), [])
         self.assertEqual(self.offset.reads, 1)  # only at startup
 
+    def test_dry_run_emergency_says_nothing_was_set(self):
+        self.make(dry_run=True)
+        self.messages()
+        self.sensors.cards = cards(82, busy=True)
+        self.run_for(10)
+        (alert,) = [m for m in self.messages() if m.startswith("Emergency:")]
+        self.assertIn("Dry-run: the fans were not changed.", alert)
+        self.assertNotIn("Fans to Max", alert)
+
 
 class TestNvidiaProblems(LoopTest):
     def test_alert_after_three_polls_and_recovery(self):

@@ -160,7 +160,8 @@ class Alerter:
         try:
             with self._state_lock:
                 self._load()
-                suppressed = kind in self._last and now - self._last[kind] < self.rate_limit_s
+                # A clock that jumped back (now before the last send) never suppresses.
+                suppressed = kind in self._last and 0 <= now - self._last[kind] < self.rate_limit_s
                 if not suppressed:
                     self._last[kind] = now
                     self._enqueue(text)

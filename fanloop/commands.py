@@ -131,7 +131,7 @@ class CommandRunner:
                 del self._cooldown[argv]
         try:
             proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, text=True, env=self._env)
+                                    stderr=subprocess.PIPE, text=True, errors="replace", env=self._env)
         except OSError as e:
             return CmdResult(False, None, "", f"cannot run {argv[0]}: {e}", False, False)
         try:
