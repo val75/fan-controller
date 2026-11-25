@@ -1,6 +1,7 @@
 """The loop's configuration (a JSON file, no secrets) and its secrets (one file each)."""
 import dataclasses
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Union
@@ -77,3 +78,21 @@ def load_secrets(directory: Union[str, Path]) -> Secrets:
     def read(name: str) -> str:
         return Path(directory, name).read_text().strip()
     return Secrets(read("telegram_token"), read("telegram_chat_id"), read("write_token"))
+
+
+def main(argv) -> int:
+    """`python3 -m fanloop.config PATH`: exit 0 if the loop would accept the file.
+    The playbook uses it to validate a rendered config before installing it."""
+    if len(argv) != 1:
+        print("usage: python3 -m fanloop.config PATH", file=sys.stderr)
+        return 2
+    try:
+        load_config(argv[0])
+    except (OSError, ValueError, TypeError) as e:
+        print(f"{argv[0]}: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

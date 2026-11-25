@@ -1,0 +1,33 @@
+[Unit]
+Description=T4 fan controller (iDRAC fan offset)
+Wants=network-online.target
+# time-sync: the alert rate limits and hold end times use the wall clock
+After=network-online.target time-sync.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=fanloop
+Group=fanloop
+SupplementaryGroups=fanctl
+Environment=PYTHONPATH=/opt/fan-controller
+ExecStart=/usr/bin/python3 -m fanloop.daemon --config /etc/fan-controller/config.json
+Restart=always
+RestartSec=5
+# Must stay above fanloop.daemon.worst_step_s (59 s with the default timeouts):
+# tests/test_deploy.py checks it equals fanloop.daemon.WATCHDOG_SEC.
+WatchdogSec=90
+StateDirectory=fan-controller
+RuntimeDirectory=fan-controller
+# Keep /run/fan-controller across restarts: the startup-failure stamp lives there.
+RuntimeDirectoryPreserve=restart
+LimitNOFILE=4096
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+# Not NoNewPrivileges: sudo can't work with it.
+# Not PrivateDevices: racadm and ipmitool need /dev/ipmi0.
+
+[Install]
+WantedBy=multi-user.target

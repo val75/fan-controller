@@ -1,0 +1,16 @@
+# The fan loop's user may run exactly these 9 command lines as root, without a
+# password (spec 5.10). sudo matches the arguments exactly: no other racadm or
+# ipmitool use is allowed. Keep in step with fanloop.commands.ROOT_COMMAND_LINES
+# (tests/test_deploy.py checks it).
+Defaults:fanloop !requiretty
+Cmnd_Alias FANLOOP_CMDS = \
+    /usr/bin/racadm get system.thermalsettings.FanSpeedOffset, \
+    /usr/bin/racadm set system.thermalsettings.FanSpeedOffset 255, \
+    /usr/bin/racadm set system.thermalsettings.FanSpeedOffset 0, \
+    /usr/bin/racadm set system.thermalsettings.FanSpeedOffset 2, \
+    /usr/bin/racadm set system.thermalsettings.FanSpeedOffset 1, \
+    /usr/bin/racadm set system.thermalsettings.FanSpeedOffset 3, \
+    /usr/bin/ipmitool sdr type temperature, \
+    /usr/bin/ipmitool sdr type fan, \
+    /usr/bin/ipmitool dcmi power reading
+fanloop ALL=(root) NOPASSWD: FANLOOP_CMDS
