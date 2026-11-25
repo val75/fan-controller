@@ -24,6 +24,8 @@ from fanloop.thresholds import PARAMS, AmbientRule, Change
 
 MAX_BODY = 16384
 _DRAIN_LIMIT = 1 << 20
+API_ERROR_EVERY_S = 60.0
+_ERROR_LOG_LOCK = threading.Lock()
 _SCALAR_PARAMS = {"step_up.low", "step_up.medium", "step_up.high", "margin", "hold_s"}
 
 
@@ -127,13 +129,19 @@ def _result(r: WriteResult) -> Tuple[int, Dict]:
 
 # -- query strings ------------------------------------------------------------------------
 
+_INT_LIMIT = 2 ** 62  # SQLite integers are 64-bit; Python's aren't
+
+
 def _q(query: Dict[str, List[str]], name: str, default, convert: Callable):
     if name not in query:
         return default
     try:
-        return convert(query[name][-1])
-    except ValueError:
+        value = convert(query[name][-1])
+    except (ValueError, OverflowError):
         raise _bad(f"{name} must be a number") from None
+    if isinstance(value, int) and not -_INT_LIMIT < value < _INT_LIMIT:
+        raise _bad(f"{name} is out of range")
+    return value
 
 
 # -- routes -----------------------------------------------------------------------------------
@@ -321,8 +329,26 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return None
         try:
             return json.loads(raw)
-        except ValueError:
+        except (ValueError, RecursionError):  # RecursionError: nesting too deep
             raise _bad("the body is not valid JSON") from None
+
+    def _log_internal_error(self, now: float, path: str, e: Exception) -> None:
+        """At most one api-error event per API_ERROR_EVERY_S per server, with a count
+        of the ones skipped, so a client repeating a failing request can't fill the disk."""
+        srv = self.server
+        with _ERROR_LOG_LOCK:
+            last = getattr(srv, "_api_error_at", None)
+            if last is not None and time.monotonic() - last < API_ERROR_EVERY_S:
+                srv._api_errors_skipped = getattr(srv, "_api_errors_skipped", 0) + 1
+                return
+            srv._api_error_at = time.monotonic()
+            skipped, srv._api_errors_skipped = getattr(srv, "_api_errors_skipped", 0), 0
+        try:
+            self.store.add_event(now, "api-error", {"path": path[:200], "error": repr(e)[:300],
+                                                    "trace": traceback.format_exc()[-1500:],
+                                                    "skipped_since_last": skipped})
+        except Exception:
+            pass
 
     def _authorized(self) -> bool:
         token = self.server.token or ""
@@ -335,22 +361,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
         now = time.time()
         url = urllib.parse.urlsplit(self.path)
         try:
-            body = self._read_body() if method == "POST" else None
             route = ROUTES.get((method, url.path))
             local = self.server.is_local
+            # Route and token come first: an unauthenticated body is never read or parsed.
+            # The connection then closes, so its unread body can't pose as the next request.
             if route is None or (route[1] == LOCAL and not local) or (route[1] == TCP and local):
+                self.close_connection = True
                 raise ApiError(404, "not-found", f"no route {method} {url.path}")
             if method == "POST" and not local and not self._authorized():
+                self.close_connection = True
                 raise ApiError(401, "unauthorized", "a valid write token is required")
+            body = self._read_body() if method == "POST" else None
             status, payload = route[0](self, urllib.parse.parse_qs(url.query), body, now)
         except ApiError as e:
             status, payload = e.status, {"error": e.error, "detail": e.detail}
         except Exception as e:
-            try:
-                self.store.add_event(now, "api-error", {"path": url.path, "error": repr(e)[:300],
-                                                        "trace": traceback.format_exc()[-1500:]})
-            except Exception:
-                pass
+            self._log_internal_error(now, url.path, e)
             status, payload = 500, {"error": "internal", "detail": "the loop logged this error"}
         try:
             self._send(status, payload)

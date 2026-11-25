@@ -199,6 +199,30 @@ class TestHostileInput(ApiTest):
         status, body = self.write([{"param": "emergency", "from": 80, "to": 85}])
         self.assertEqual((status, body["error"]), (409, "unknown-param"))
 
+    def api_errors(self):
+        return self.store.events(0, kinds=["api-error"])
+
+    def test_unauthenticated_bodies_are_never_parsed(self):
+        deep = b"[" * 15000
+        self.assertEqual(self.request("POST", "/no-such-route", raw=deep)[0], 404)
+        self.assertEqual(self.request("POST", "/thresholds", raw=deep)[0], 401)
+        self.assertEqual(self.request("POST", "/marks/start", raw=deep, token="wrong")[0], 401)
+        self.assertEqual(self.api_errors(), [])
+        self.assertEqual(self.request("GET", "/status")[0], 200)
+
+    def test_deeply_nested_json_is_a_400(self):
+        status, body = self.request("POST", "/thresholds", raw=b"[" * 15000, token=TOKEN)
+        self.assertEqual(status, 400, body)
+        self.assertEqual(self.api_errors(), [])
+
+    def test_huge_numbers_in_queries_are_a_400(self):
+        for path in ("/changes?since_version=99999999999999999999999", "/episodes?version=99999999999999999999999",
+                     "/diff?version=99999999999999999999999"):
+            with self.subTest(path=path):
+                status, _ = self.request("GET", path, local=path.startswith("/diff"))
+                self.assertEqual(status, 400)
+        self.assertEqual(self.api_errors(), [])
+
 
 class TestSocket(ApiTest):
     def test_write_is_user_cli(self):
@@ -262,6 +286,11 @@ class TestResilience(ApiTest):
         self.assertEqual(status, 500)
         self.assertEqual(self.request("GET", "/episodes")[0], 200)
         self.assertTrue(self.store.events(0, kinds=["api-error"]))
+
+    def test_repeated_500s_write_one_event_per_minute(self):
+        for _ in range(50):
+            self.assertEqual(self.request("GET", "/status")[0], 500)
+        self.assertEqual(len(self.store.events(0, kinds=["api-error"])), 1)
 
 
 if __name__ == "__main__":
