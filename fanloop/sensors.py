@@ -1,12 +1,14 @@
 """Reading the GPUs (nvidia-smi), the iDRAC sensors (ipmitool) and llama-server's health."""
 import re
+import time
 import urllib.request
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from fanloop.commands import IPMI_FANS, IPMI_POWER, IPMI_TEMPS, NVIDIA_QUERY, CmdResult
 from fanloop.readings import CardReading, IpmiReading
 
 _FLAGS = {"Active": True, "Not Active": False}
+_MIN_IPMI_CALL_S = 1.0
 _POWER_RE = re.compile(r"Instantaneous power reading:\s*([0-9.]+)\s*Watts")
 
 
@@ -81,10 +83,15 @@ def _failure_text(r: CmdResult) -> str:
 
 
 class Sensors:
-    def __init__(self, runner, nvidia_timeout_s: float = 10.0, ipmi_timeout_s: float = 15.0):
+    """`ipmi_timeout_s` limits one whole IPMI read (up to three ipmitool calls), so a
+    slow BMC can't hold a poll past systemd's watchdog."""
+
+    def __init__(self, runner, nvidia_timeout_s: float = 10.0, ipmi_timeout_s: float = 15.0,
+                 clock: Callable[[], float] = time.monotonic):
         self.runner = runner
         self.nvidia_timeout_s = nvidia_timeout_s
         self.ipmi_timeout_s = ipmi_timeout_s
+        self.clock = clock
 
     def gpus(self) -> Tuple[List[CardReading], Optional[str]]:
         """The readable cards, and an error text if anything was missing."""
@@ -98,19 +105,35 @@ class Sensors:
             return [], "nvidia-smi printed no GPUs"
         return cards, None
 
-    def _ipmi(self, argv) -> str:
-        r = self.runner.run(argv, self.ipmi_timeout_s)
-        return r.stdout if r.ok else ""
+    def _ipmi_calls(self, *argvs) -> List[str]:
+        """Each command's stdout ('' if it failed), within one shared time budget.
+        After a hung command the rest are skipped: the BMC behind them is the same."""
+        deadline = self.clock() + self.ipmi_timeout_s
+        out = []
+        for argv in argvs:
+            left = deadline - self.clock()
+            if left < _MIN_IPMI_CALL_S:
+                out.append("")
+                continue
+            r = self.runner.run(argv, left)
+            out.append(r.stdout if r.ok else "")
+            if r.timed_out or r.skipped:
+                deadline = self.clock()  # nothing more this round
+        return out
 
     def ipmi(self) -> IpmiReading:
-        inlet, exhaust = parse_sdr_temps(self._ipmi(IPMI_TEMPS))
-        return IpmiReading(inlet, exhaust, parse_sdr_fans(self._ipmi(IPMI_FANS)), self.power())
+        temps, fans, power = self._ipmi_calls(IPMI_TEMPS, IPMI_FANS, IPMI_POWER)
+        inlet, exhaust = parse_sdr_temps(temps)
+        return IpmiReading(inlet, exhaust, parse_sdr_fans(fans), parse_dcmi_power(power))
 
     def power(self) -> Optional[float]:
-        return parse_dcmi_power(self._ipmi(IPMI_POWER))
+        return parse_dcmi_power(self._ipmi_calls(IPMI_POWER)[0])
 
 
-def llama_health(url: str, timeout_s: float = 3.0) -> bool:
+LLAMA_TIMEOUT_S = 3.0
+
+
+def llama_health(url: str, timeout_s: float = LLAMA_TIMEOUT_S) -> bool:
     """True if llama-server answers its health URL with HTTP 200."""
     try:
         with urllib.request.urlopen(url, timeout=timeout_s) as resp:

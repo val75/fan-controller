@@ -22,10 +22,11 @@ class Config:
     offset_read_every_s: float = 60.0
     watchdog_every_s: float = 60.0
     prune_every_s: float = 3600.0
-    # Command timeouts
+    # Command timeouts. Together they bound one poll: see daemon.worst_step_s and WATCHDOG_SEC.
     nvidia_timeout_s: float = 10.0
-    ipmi_timeout_s: float = 15.0
-    racadm_timeout_s: float = 20.0
+    ipmi_timeout_s: float = 15.0       # one whole IPMI read (up to three ipmitool calls)
+    racadm_timeout_s: float = 10.0     # each racadm call
+    racadm_set_budget_s: float = 25.0  # one set with its read-back and retries
     # Blind rule (spec 7), to be set from the live measurement
     blind_idle_power_w: float = 238.0
     blind_power_above_w: float = 50.0

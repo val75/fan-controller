@@ -94,22 +94,23 @@ class Clock:
 
 
 class LoopTest(unittest.TestCase):
-    def make(self, start_level=Level.OFF, **cfg):
-        self.clock = Clock()
-        self.store = Store(":memory:", load_defaults())
+    def make(self, start_level=Level.OFF, sensors=None, offset=None, llama=None, store=None, **cfg):
+        if not hasattr(self, "clock"):
+            self.clock = Clock()
+        self.store = store or Store(":memory:", load_defaults())
         self.sender = FakeSender()
         self.alerter = Alerter(self.sender, self.store)
         self.alerter.start()
         self.addCleanup(self.alerter.stop)
-        self.sensors = FakeSensors()
-        self.offset = FakeOffset(start_level)
+        self.sensors = sensors or FakeSensors()
+        self.offset = offset or FakeOffset(start_level)
         self.cfg = Config(**{"dry_run": False, **cfg})
         marks, holds, watchdog = Marks(self.store), Holds(self.store), ReviewWatchdog(self.store)
         self.service = Service(self.store, self.alerter, marks, holds, watchdog, dry_run=self.cfg.dry_run)
         self.loop = Loop(self.cfg, self.service, self.store, self.sensors, self.offset,
                          Controller(load_defaults(), ControlConfig()), BusyDetector(), EpisodeTracker(),
                          self.alerter, marks, holds, watchdog,
-                         mono=lambda: self.clock.mono, wall=lambda: self.clock.wall, llama=lambda: True)
+                         mono=lambda: self.clock.mono, wall=lambda: self.clock.wall, llama=llama or (lambda: True))
         self.loop.startup()
         return self.loop
 
@@ -380,6 +381,56 @@ class TestRunForever(unittest.TestCase):
         threading.Timer(0.25, stop.set).start()
         Stub().run_forever(stop)
         self.assertGreaterEqual(len(steps), 5)
+
+
+class TestStepBudget(LoopTest):
+    """With every command at its worst, one step must still end well inside systemd's
+    WatchdogSec, or the watchdog restarts a loop that is only waiting on a slow BMC."""
+
+    def make_with(self, behave):
+        from fanloop.daemon import build_io
+        from fanloop.sensors import LLAMA_TIMEOUT_S
+        test = self
+
+        class Runner:
+            def run(self, argv, timeout_s):
+                return behave(test.clock, timeout_s)
+
+            def stuck_count(self):
+                return 0
+
+        sensors, offset = build_io(Config(dry_run=False), Runner(), lambda: self.clock.mono)
+        self.make(sensors=sensors, offset=offset,
+                  llama=lambda: self.clock.advance(LLAMA_TIMEOUT_S) or False)
+
+    def first_step_takes(self):
+        start = self.clock.mono
+        self.loop.step()  # the first step: offset unknown, so it sets; IPMI and llama are due
+        return self.clock.mono - start
+
+    def test_every_command_hangs(self):
+        from fanloop.commands import KILL_GRACE_S, CmdResult
+        from fanloop.daemon import worst_step_s
+
+        def hang(clock, timeout_s):
+            clock.advance(timeout_s + KILL_GRACE_S)
+            return CmdResult(False, None, "", "timed out", True, False)
+        self.make_with(hang)
+        self.assertLessEqual(self.first_step_takes(), worst_step_s(self.cfg))
+
+    def test_every_command_is_slow_but_answers(self):
+        from fanloop.commands import CmdResult
+        from fanloop.daemon import worst_step_s
+
+        def slow(clock, timeout_s):
+            clock.advance(timeout_s * 0.99)
+            return CmdResult(True, 0, "nothing useful", "", False, False)
+        self.make_with(slow)
+        self.assertLessEqual(self.first_step_takes(), worst_step_s(self.cfg))
+
+    def test_the_budget_fits_the_unit_watchdog(self):
+        from fanloop.daemon import WATCHDOG_SEC, worst_step_s
+        self.assertLessEqual(worst_step_s(Config()) + 30, WATCHDOG_SEC)
 
 
 class TestConfig(unittest.TestCase):

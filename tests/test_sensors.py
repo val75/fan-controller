@@ -3,7 +3,7 @@ import threading
 import unittest
 from pathlib import Path
 
-from fanloop.commands import IPMI_FANS, IPMI_POWER, IPMI_TEMPS, NVIDIA_QUERY
+from fanloop.commands import IPMI_FANS, IPMI_POWER, IPMI_TEMPS, NVIDIA_QUERY, CmdResult
 from fanloop.sensors import (
     Sensors,
     llama_health,
@@ -99,6 +99,27 @@ class TestSensors(unittest.TestCase):
         self.assertEqual((reading.inlet_c, reading.exhaust_c, reading.power_w), (14.0, 20.0, 236.0))
         self.assertGreaterEqual(len(reading.fans_rpm), 1)
         self.assertEqual(sensors.power(), 236.0)
+
+    def test_ipmi_stops_after_a_hung_command(self):
+        hung = CmdResult(False, None, "", "timed out after 8 s", True, False)
+        runner = FakeRunner({IPMI_TEMPS: [hung], IPMI_FANS: [ok(fixture("sdr_fan.txt"))],
+                             IPMI_POWER: [ok(fixture("dcmi_power.txt"))]})
+        reading = Sensors(runner).ipmi()
+        self.assertEqual(runner.calls, [IPMI_TEMPS])  # the BMC is hung: don't queue more on it
+        self.assertEqual((reading.inlet_c, reading.fans_rpm, reading.power_w), (None, {}, None))
+
+    def test_one_ipmi_read_stays_inside_its_time_budget(self):
+        clock = [0.0]
+
+        class SlowRunner(FakeRunner):
+            def run(self, argv, timeout_s):
+                clock[0] += timeout_s * 0.99  # slow, never quite timing out
+                return super().run(argv, timeout_s)
+
+        runner = SlowRunner({IPMI_TEMPS: [ok(fixture("sdr_temperature.txt"))], IPMI_FANS: [ok(fixture("sdr_fan.txt"))],
+                             IPMI_POWER: [ok(fixture("dcmi_power.txt"))]})
+        Sensors(runner, ipmi_timeout_s=15, clock=lambda: clock[0]).ipmi()
+        self.assertLessEqual(clock[0], 15.0)
 
     def test_ipmi_failure_gives_empty_reading(self):
         reading = Sensors(FakeRunner({})).ipmi()

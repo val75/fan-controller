@@ -3,6 +3,7 @@ never lets a hanging command stall the loop (spec 7)."""
 import os
 import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
@@ -49,20 +50,50 @@ class CmdResult:
     skipped: bool
 
 
+KILL_GRACE_S = 2.0  # between SIGTERM and SIGKILL on a timeout
+KILLED_COOLDOWN_S = 60.0
+
+
 def _kill(proc: subprocess.Popen) -> None:
-    proc.kill()
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+def _terminate(proc: subprocess.Popen) -> None:
+    try:
+        proc.terminate()
+    except OSError:
+        pass
 
 
 class CommandRunner:
     """Runs a command with a timeout and never waits for a process that won't die.
 
-    A process stuck in the kernel (e.g. nvidia-smi when a GPU fell off the bus)
-    ignores even SIGKILL. On a timeout the runner kills it, keeps it on a stuck
-    list without waiting, and refuses to start another copy while it lives."""
+    On a timeout it sends SIGTERM first: sudo passes SIGTERM on to the root command
+    it runs, but SIGKILL only kills sudo itself and leaves the root command orphaned,
+    where the loop can no longer see or signal it. After KILL_GRACE_S it sends SIGKILL.
 
-    def __init__(self, kill: Callable[[subprocess.Popen], None] = _kill):
+    A process stuck in the kernel (e.g. nvidia-smi when a GPU fell off the bus)
+    ignores even SIGKILL: it stays on a stuck list, and no second copy starts while
+    it lives. A sudo command that needed SIGKILL may have left an invisible root
+    orphan behind, so that command line waits `cooldown_s` before it runs again:
+    at most one orphan per command line per cooldown."""
+
+    def __init__(self, kill: Callable[[subprocess.Popen], None] = _kill,
+                 terminate: Callable[[subprocess.Popen], None] = _terminate,
+                 grace_s: float = KILL_GRACE_S, cooldown_s: float = KILLED_COOLDOWN_S,
+                 clock: Callable[[], float] = time.monotonic,
+                 can_orphan: Callable[[Tuple[str, ...]], bool] = lambda argv: argv[:1] == SUDO[:1]):
         self._kill = kill
+        self._terminate = terminate
+        self._grace_s = grace_s
+        self._cooldown_s = cooldown_s
+        self._clock = clock
+        self._can_orphan = can_orphan
         self._stuck: Dict[Tuple[str, ...], List[subprocess.Popen]] = {}
+        self._cooldown: Dict[Tuple[str, ...], float] = {}
         self._lock = threading.Lock()
         self._env = {**os.environ, "LC_ALL": "C"}
 
@@ -92,6 +123,12 @@ class CommandRunner:
             self._reap()
             if argv in self._stuck:
                 return CmdResult(False, None, "", "previous run still stuck", False, True)
+            until = self._cooldown.get(argv)
+            if until is not None:
+                if self._clock() < until:
+                    return CmdResult(False, None, "", "the last run ignored SIGTERM and was killed; "
+                                                      "waiting before trying again", False, True)
+                del self._cooldown[argv]
         try:
             proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                     stderr=subprocess.PIPE, text=True, env=self._env)
@@ -100,8 +137,14 @@ class CommandRunner:
         try:
             stdout, stderr = proc.communicate(timeout=timeout_s)
         except subprocess.TimeoutExpired:
-            self._kill(proc)
-            with self._lock:
-                self._stuck.setdefault(argv, []).append(proc)
+            self._terminate(proc)
+            try:
+                proc.communicate(timeout=self._grace_s)  # it ended on SIGTERM; this also closes the pipes
+            except subprocess.TimeoutExpired:
+                self._kill(proc)
+                with self._lock:
+                    if self._can_orphan(argv):
+                        self._cooldown[argv] = self._clock() + self._cooldown_s
+                    self._stuck.setdefault(argv, []).append(proc)
             return CmdResult(False, None, "", f"timed out after {timeout_s:g} s", True, False)
         return CmdResult(proc.returncode == 0, proc.returncode, stdout, stderr, False, False)

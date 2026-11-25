@@ -1,6 +1,6 @@
 import unittest
 
-from fanloop.commands import RACADM_GET, racadm_set
+from fanloop.commands import RACADM_GET, CmdResult, racadm_set
 from fanloop.levels import Level
 from fanloop.offset import Offset, SetResult
 from tests.fakes import FakeRunner, fail, ok
@@ -57,6 +57,38 @@ class TestOffsetSet(unittest.TestCase):
         runner = FakeRunner({racadm_set(Level.HIGH): [ok(MODIFIED)],
                              RACADM_GET: [get("Off"), get("High Fan Speed")]})
         self.assertEqual(Offset(runner, dry_run=False).set(Level.HIGH), SetResult(True, Level.HIGH, 2, None))
+
+    def test_a_hung_set_is_not_retried_or_read_back(self):
+        hung = CmdResult(False, None, "", "timed out after 10 s", True, False)
+        runner = FakeRunner({racadm_set(Level.MAX): [hung], RACADM_GET: [get("Off")]})
+        result = Offset(runner, dry_run=False).set(Level.MAX)
+        self.assertFalse(result.ok)
+        self.assertEqual(runner.calls, [racadm_set(Level.MAX)])
+        self.assertIn("timed out", result.error)
+
+    def test_a_hung_read_back_ends_the_set(self):
+        hung = CmdResult(False, None, "", "timed out after 10 s", True, False)
+        runner = FakeRunner({racadm_set(Level.MAX): [ok(MODIFIED)], RACADM_GET: [hung]})
+        result = Offset(runner, dry_run=False).set(Level.MAX)
+        self.assertFalse(result.ok)
+        self.assertEqual(runner.calls, [racadm_set(Level.MAX), RACADM_GET])
+
+    def test_slow_racadm_stays_inside_the_time_budget(self):
+        clock = [0.0]
+        timeouts = []
+
+        class SlowRunner(FakeRunner):
+            def run(self, argv, timeout_s):
+                timeouts.append(timeout_s)
+                clock[0] += min(9.0, timeout_s)  # slow, but never quite timing out
+                return super().run(argv, timeout_s)
+
+        runner = SlowRunner({racadm_set(Level.HIGH): [ok(MODIFIED)], RACADM_GET: [get("Off")]})
+        offset = Offset(runner, dry_run=False, retries=3, timeout_s=10, budget_s=20, clock=lambda: clock[0])
+        result = offset.set(Level.HIGH)
+        self.assertFalse(result.ok)
+        self.assertLessEqual(clock[0], 20.0)
+        self.assertTrue(all(t > 0 for t in timeouts))
 
     def test_dry_run_runs_nothing(self):
         runner = FakeRunner({})

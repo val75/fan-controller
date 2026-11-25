@@ -19,6 +19,28 @@ _SLOWDOWN_CLEAR_S = 300.0
 _MAX_WINDOW_S = 120.0
 _MAX_RISE_C = 2.0
 
+# systemd's WatchdogSec for the loop's unit. It must exceed the longest a poll can
+# take with every command at its worst (worst_step_s), with room to spare.
+WATCHDOG_SEC = 90
+
+
+def worst_step_s(cfg) -> float:
+    """The longest one poll can take: nvidia-smi, one IPMI read and one racadm set,
+    each up to its limit plus the SIGTERM grace, and the llama-server health check."""
+    from fanloop.commands import KILL_GRACE_S
+    from fanloop.sensors import LLAMA_TIMEOUT_S
+    racadm = max(cfg.racadm_set_budget_s, cfg.racadm_timeout_s)
+    return (cfg.nvidia_timeout_s + cfg.ipmi_timeout_s + racadm + 3 * KILL_GRACE_S + LLAMA_TIMEOUT_S)
+
+
+def build_io(cfg, runner, clock: Callable[[], float]):
+    """The sensors and the offset, with the config's time limits."""
+    from fanloop.offset import Offset
+    from fanloop.sensors import Sensors
+    return (Sensors(runner, nvidia_timeout_s=cfg.nvidia_timeout_s, ipmi_timeout_s=cfg.ipmi_timeout_s, clock=clock),
+            Offset(runner, dry_run=cfg.dry_run, timeout_s=cfg.racadm_timeout_s,
+                   budget_s=cfg.racadm_set_budget_s, clock=clock))
+
 
 def sd_notify(msg: str) -> None:
     """Tell systemd something (READY=1, WATCHDOG=1). Does nothing outside systemd."""
@@ -310,8 +332,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     from fanloop.episodes import EpisodeTracker
     from fanloop.holds import Holds
     from fanloop.marks import Marks
-    from fanloop.offset import Offset
-    from fanloop.sensors import Sensors, llama_health
+    from fanloop.sensors import llama_health
     from fanloop.service import Service
     from fanloop.store import Store
     from fanloop.thresholds import load_defaults
@@ -331,9 +352,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     controller = Controller(store.current()[1], ControlConfig(
         blind_idle_power_w=cfg.blind_idle_power_w, blind_power_above_w=cfg.blind_power_above_w,
         blind_hold_s=cfg.blind_hold_s))
-    loop = Loop(cfg, service, store,
-                Sensors(runner, nvidia_timeout_s=cfg.nvidia_timeout_s, ipmi_timeout_s=cfg.ipmi_timeout_s),
-                Offset(runner, dry_run=cfg.dry_run, timeout_s=cfg.racadm_timeout_s),
+    sensors, offset = build_io(cfg, runner, time.monotonic)
+    loop = Loop(cfg, service, store, sensors, offset,
                 controller, BusyDetector(), EpisodeTracker(), alerter, marks, holds, watchdog,
                 mono=time.monotonic, wall=time.time, llama=lambda: llama_health(cfg.llama_health_url))
 

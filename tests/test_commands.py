@@ -1,5 +1,8 @@
+import os
+import tempfile
 import time
 import unittest
+from pathlib import Path
 
 from fanloop.commands import (
     IPMI_FANS,
@@ -59,10 +62,66 @@ class TestCommandRunner(unittest.TestCase):
                     pipe.close()
 
     def unkillable_runner(self):
-        """Simulates a process stuck in the driver: kill() has no effect."""
+        """Simulates a process stuck in the driver: neither signal has any effect."""
         def no_kill(proc):
             self.leftovers.append(proc)
-        return CommandRunner(kill=no_kill)
+        return CommandRunner(kill=no_kill, terminate=lambda proc: None, grace_s=0.05)
+
+    def child_pid(self, path):
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            text = Path(path).read_text().strip() if os.path.exists(path) else ""
+            if text:
+                return int(text)
+            time.sleep(0.01)
+        self.fail("the test script never wrote its child's pid")
+
+    def alive(self, pid):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        return True
+
+    def test_timeout_sends_sigterm_first_so_sudo_can_pass_it_on(self):
+        # sudo passes SIGTERM on to the root command; SIGKILL kills sudo alone and orphans it.
+        with tempfile.TemporaryDirectory() as d:
+            pid_file = os.path.join(d, "pid")
+            like_sudo = ("/bin/sh", "-c", f'sleep 30 & c=$!; echo $c > {pid_file}; '
+                                          'trap "kill $c; exit 143" TERM; wait')
+            runner = CommandRunner(grace_s=2.0)
+            r = runner.run(like_sudo, 0.3)
+            pid = self.child_pid(pid_file)
+            self.addCleanup(lambda: self.alive(pid) and os.kill(pid, 9))
+            self.assertTrue(r.timed_out)
+            time.sleep(0.2)
+            self.assertFalse(self.alive(pid), "the child was orphaned")
+
+    def test_a_command_that_needed_sigkill_waits_before_running_again(self):
+        clock = [100.0]
+        with tempfile.TemporaryDirectory() as d:
+            pid_file = os.path.join(d, "pid")
+            deaf = ("/bin/sh", "-c", f'trap "" TERM; sleep 30 & c=$!; echo $c > {pid_file}; wait $c')
+            runner = CommandRunner(grace_s=0.2, cooldown_s=60, clock=lambda: clock[0],
+                                   can_orphan=lambda argv: True)  # as if run through sudo
+            first = runner.run(deaf, 0.3)
+            pid = self.child_pid(pid_file)
+            self.addCleanup(lambda: self.alive(pid) and os.kill(pid, 9))
+            self.assertTrue(first.timed_out)
+            time.sleep(0.2)  # the killed shell is reaped; its orphaned child lives on
+            self.assertEqual(runner.stuck_count(), 0)
+            again = runner.run(deaf, 0.3)
+            self.assertTrue(again.skipped)
+            self.assertIn("SIGTERM", again.stderr)
+            self.assertTrue(runner.run(("/bin/echo", "other commands still run"), 5).ok)
+            clock[0] += 61
+            os.kill(pid, 9)
+            os.unlink(pid_file)
+            later = runner.run(deaf, 0.3)
+            pid2 = self.child_pid(pid_file)
+            self.addCleanup(lambda: self.alive(pid2) and os.kill(pid2, 9))
+            self.assertFalse(later.skipped)
+            self.assertTrue(later.timed_out)
 
     def test_ok(self):
         r = CommandRunner().run(("/bin/echo", "hi"), 5)
@@ -105,6 +164,12 @@ class TestCommandRunner(unittest.TestCase):
         r = runner.run(("/bin/sleep", "0.3"), 2)
         self.assertFalse(r.skipped)
         self.assertTrue(r.ok)
+
+    def test_only_sudo_commands_get_the_cooldown(self):
+        from fanloop.commands import SUDO
+        runner = CommandRunner()
+        self.assertTrue(runner._can_orphan(SUDO + ("/usr/bin/racadm", "get", "x")))
+        self.assertFalse(runner._can_orphan(("/usr/bin/nvidia-smi",)))
 
     def test_default_kill_really_kills(self):
         runner = CommandRunner()
