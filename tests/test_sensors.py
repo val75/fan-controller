@@ -93,6 +93,22 @@ class TestSensors(unittest.TestCase):
         self.assertEqual(cards, [])
         self.assertIn("NVIDIA-SMI has failed", error)
 
+    def test_one_card_lost_with_a_nonzero_exit_keeps_the_other_card(self):
+        # What a GPU that fell off the bus most likely looks like: one good line,
+        # one error line, and nvidia-smi exiting non-zero.
+        out = ("1, 61, 41.20, 87, 1395, Not Active, Not Active, Not Active\n"
+               "Unable to determine the device handle for GPU0000:04:00.0: Unknown Error\n")
+        cards, error = Sensors(self.runner(CmdResult(False, 15, out, "", False, False))).gpus()
+        self.assertEqual([c.index for c in cards], [1])
+        self.assertEqual(cards[0].temp_c, 61.0)
+        self.assertIn("Unknown Error", error)
+
+    def test_timed_out_nvidia_smi_gives_no_cards(self):
+        hung = CmdResult(False, None, "", "timed out after 10 s", True, False)
+        cards, error = Sensors(self.runner(hung)).gpus()
+        self.assertEqual(cards, [])
+        self.assertIn("timed out", error)
+
     def test_ipmi_and_power(self):
         sensors = Sensors(self.runner(ok(fixture("nvidia.txt"))))
         reading = sensors.ipmi()

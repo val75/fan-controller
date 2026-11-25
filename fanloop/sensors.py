@@ -4,7 +4,7 @@ import time
 import urllib.request
 from typing import Callable, Dict, List, Optional, Tuple
 
-from fanloop.commands import IPMI_FANS, IPMI_POWER, IPMI_TEMPS, NVIDIA_QUERY, CmdResult
+from fanloop.commands import IPMI_FANS, IPMI_POWER, IPMI_TEMPS, NVIDIA_QUERY
 from fanloop.readings import CardReading, IpmiReading
 
 _FLAGS = {"Active": True, "Not Active": False}
@@ -78,10 +78,6 @@ def parse_dcmi_power(stdout: str) -> Optional[float]:
     return float(m.group(1)) if m else None
 
 
-def _failure_text(r: CmdResult) -> str:
-    return (r.stderr or r.stdout).strip() or f"exit status {r.returncode}"
-
-
 class Sensors:
     """`ipmi_timeout_s` limits one whole IPMI read (up to three ipmitool calls), so a
     slow BMC can't hold a poll past systemd's watchdog."""
@@ -94,16 +90,19 @@ class Sensors:
         self.clock = clock
 
     def gpus(self) -> Tuple[List[CardReading], Optional[str]]:
-        """The readable cards, and an error text if anything was missing."""
+        """The readable cards, and an error text if anything was missing.
+
+        Lines are parsed whatever the exit code: when one GPU fails, nvidia-smi still
+        prints the other card's line but exits non-zero, and a line with all eight
+        fields is a real reading (spec 7: control on the card that still reads)."""
         r = self.runner.run(NVIDIA_QUERY, self.nvidia_timeout_s)
+        cards, problems = parse_nvidia(r.stdout)
         if not r.ok:
-            return [], _failure_text(r)
-        cards, errors = parse_nvidia(r.stdout)
-        if errors:
-            return cards, "; ".join(errors)
-        if not cards:
-            return [], "nvidia-smi printed no GPUs"
-        return cards, None
+            problems.insert(0, r.stderr.strip() or ("" if problems else r.stdout.strip())
+                            or f"exit status {r.returncode}")
+        if not cards and not problems:
+            problems = ["nvidia-smi printed no GPUs"]
+        return cards, ("; ".join(problems) if problems else None)
 
     def _ipmi_calls(self, *argvs) -> List[str]:
         """Each command's stdout ('' if it failed), within one shared time budget.
