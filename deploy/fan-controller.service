@@ -19,6 +19,7 @@ RestartSec=5
 # tests/test_deploy.py checks it equals fanloop.daemon.WATCHDOG_SEC.
 WatchdogSec=90
 StateDirectory=fan-controller
+StateDirectoryMode=0750
 RuntimeDirectory=fan-controller
 # Keep /run/fan-controller across restarts: the startup-failure stamp lives there.
 RuntimeDirectoryPreserve=restart

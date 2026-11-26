@@ -51,6 +51,12 @@ class TestLoopUnit(unittest.TestCase):
         self.assertEqual(self.keys["RuntimeDirectory"], ["fan-controller"])
         self.assertEqual(self.keys["RuntimeDirectoryPreserve"], ["restart"])
 
+    def test_state_directory_mode_matches_the_playbook(self):
+        # The playbook creates /var/lib/fan-controller as 0750; without this systemd
+        # resets it to 0755 at each start and every playbook run reports a change.
+        self.assertEqual(self.keys["StateDirectory"], ["fan-controller"])
+        self.assertEqual(self.keys["StateDirectoryMode"], ["0750"])
+
     def test_hardening_leaves_sudo_and_the_ipmi_device_working(self):
         self.assertNotIn("NoNewPrivileges", self.keys)  # sudo can't work with it
         self.assertNotIn("PrivateDevices", self.keys)  # racadm and ipmitool need /dev/ipmi0
