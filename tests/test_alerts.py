@@ -6,6 +6,7 @@ import unittest
 import urllib.parse
 
 from fanloop.alerts import PREFIX, Alerter, TelegramSender
+from fanloop.clock import local, zone
 from fanloop.store import Store
 from fanloop.thresholds import load_defaults
 
@@ -112,7 +113,7 @@ class TestSuppressedIncidents(AlerterTest):
     message saying all is well. A suppressed incident that lasts is sent late."""
 
     def since(self, ts):
-        return time.strftime("%H:%M", time.localtime(ts))
+        return local(ts, zone("EET")).strftime("%H:%M")
 
     def test_a_suppressed_incident_that_lasts_is_sent_late(self):
         self.alerter.open_incident("slowdown", "slowdown 1", T0)

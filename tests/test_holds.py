@@ -1,35 +1,47 @@
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 
+from fanloop.clock import zone
 from fanloop.holds import Hold, Holds, parse_until
 from fanloop.levels import Level
 from fanloop.store import Store
 from fanloop.thresholds import load_defaults
 
-T0 = datetime(2026, 11, 23, 14, 0).timestamp()  # a Monday, 14:00 local time
+EET = zone("EET")
+T0 = datetime(2026, 11, 23, 14, 0, tzinfo=EET).timestamp()  # a Monday, 14:00 in the loop's zone
 H = 3600.0
 
 
 class TestParseUntil(unittest.TestCase):
     def test_clock_time_later_today(self):
-        self.assertEqual(parse_until("18:00", datetime(2026, 11, 23, 17, 0)), datetime(2026, 11, 23, 18, 0))
+        self.assertEqual(parse_until("18:00", datetime(2026, 11, 23, 17, 0, tzinfo=EET)),
+                         datetime(2026, 11, 23, 18, 0, tzinfo=EET))
 
     def test_clock_time_already_passed_means_tomorrow(self):
-        self.assertEqual(parse_until("18:00", datetime(2026, 11, 23, 19, 0)), datetime(2026, 11, 24, 18, 0))
+        self.assertEqual(parse_until("18:00", datetime(2026, 11, 23, 19, 0, tzinfo=EET)),
+                         datetime(2026, 11, 24, 18, 0, tzinfo=EET))
 
     def test_full_date(self):
-        self.assertEqual(parse_until("2026-12-01 08:30", datetime(2026, 11, 23, 9, 0)), datetime(2026, 12, 1, 8, 30))
+        self.assertEqual(parse_until("2026-12-01 08:30", datetime(2026, 11, 23, 9, 0, tzinfo=EET)),
+                         datetime(2026, 12, 1, 8, 30, tzinfo=EET))
+
+    def test_times_are_in_the_zone_of_now(self):
+        # 18:00 EET in November is 16:00 UTC; in July (EEST) it is 15:00 UTC
+        winter = parse_until("18:00", datetime(2026, 11, 26, 11, 0, tzinfo=EET))
+        self.assertEqual(winter.timestamp(), datetime(2026, 11, 26, 16, 0, tzinfo=timezone.utc).timestamp())
+        summer = parse_until("2026-07-01 18:00", datetime(2026, 6, 30, 9, 0, tzinfo=EET))
+        self.assertEqual(summer.timestamp(), datetime(2026, 7, 1, 15, 0, tzinfo=timezone.utc).timestamp())
 
     def test_bad_text(self):
         for text in ("tomorrow", "25:00", "18", "2026-13-01 08:00", ""):
             with self.subTest(text=text), self.assertRaises(ValueError):
-                parse_until(text, datetime(2026, 11, 23, 9, 0))
+                parse_until(text, datetime(2026, 11, 23, 9, 0, tzinfo=EET))
 
 
 class HoldsTest(unittest.TestCase):
     def setUp(self):
         self.store = Store(":memory:", load_defaults())
-        self.holds = Holds(self.store)
+        self.holds = Holds(self.store, tz=EET)
 
     def kinds(self):
         return [e["kind"] for e in self.store.events(0)]

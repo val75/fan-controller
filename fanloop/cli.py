@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 from fanloop.api import UnixHTTPConnection
+from fanloop.clock import DEFAULT_TZ, clock_text, local, zone
 from fanloop.config import Config
 from fanloop.holds import parse_until
 from fanloop.levels import Level, level_from_name
@@ -130,14 +131,20 @@ def _to_change(d: Dict) -> Change:
     return Change(d["param"], value(d["from"]), value(d["to"]))
 
 
-def _when(ts: float, now: float) -> str:
-    t, n = time.localtime(ts), time.localtime(now)
-    return time.strftime("%H:%M" if t[:3] == n[:3] else "%a %Y-%m-%d %H:%M", t)
+def _when(ts: float, now: float, tz) -> str:
+    return clock_text(ts, now, tz, other_day="%a %Y-%m-%d %H:%M")
 
 
 class _Cli:
     def __init__(self, client, stdin, stdout, now: float):
         self.client, self.stdin, self.out, self.now = client, stdin, stdout, now
+        self._tz = None
+
+    def tz(self):
+        """The loop's time zone, from /status: fanctl shows and reads times in it."""
+        if self._tz is None:
+            self._tz = zone(self.get_ok("/status").get("timezone") or DEFAULT_TZ)
+        return self._tz
 
     def say(self, text: str = "") -> None:
         print(text, file=self.out)
@@ -216,7 +223,8 @@ class _Cli:
             self.say("  " + ", ".join(env))
         hold = s.get("hold")
         if hold:
-            until = "until cancelled" if hold.get("until") is None else f"until {_when(hold['until'], self.now)}"
+            until = ("until cancelled" if hold.get("until") is None
+                     else f"until {_when(hold['until'], self.now, zone(s.get('timezone') or DEFAULT_TZ))}")
             self.say(f"Hold at {hold['level'].capitalize()}, {until}")
         if s.get("review_watchdog_muted"):
             self.say("Review watchdog muted")
@@ -244,7 +252,7 @@ class _Cli:
         if not versions:
             self.say(f"No threshold changes in the last {args.days} days.")
         for v in versions:
-            when = time.strftime("%a %Y-%m-%d %H:%M", time.localtime(v["created_at"]))
+            when = local(v["created_at"], self.tz()).strftime("%a %Y-%m-%d %H:%M")
             self.say(f"v{v['version']}  {when}  {v['source']}: {v['reason']}")
             for c in v.get("changes") or []:
                 self.say(f"    {describe_change(_to_change(c))}")
@@ -311,12 +319,12 @@ class _Cli:
             if words[1] != "until" or len(words) < 3:
                 raise Usage("use: hold LEVEL [until HH:MM | until YYYY-MM-DD HH:MM]")
             try:
-                until = parse_until(" ".join(words[2:]), datetime.fromtimestamp(self.now))
+                until = parse_until(" ".join(words[2:]), datetime.fromtimestamp(self.now, self.tz()))
             except ValueError as e:
                 raise Usage(str(e)) from None
             body["until"] = until.timestamp()
         self.post_ok("/hold", body)
-        end = "until cancelled" if "until" not in body else f"until {_when(body['until'], self.now)}"
+        end = "until cancelled" if "until" not in body else f"until {_when(body['until'], self.now, self.tz())}"
         self.say(f"Hold at {level.name.capitalize()}, {end}. fanctl hold off to end it.")
         return OK
 
@@ -330,7 +338,8 @@ class _Cli:
             raise Usage("use: mute reviews until YYYY-MM-DD [HH:MM]; mute off")
         text = " ".join(words[2:])
         try:
-            until = datetime.strptime(text, "%Y-%m-%d %H:%M" if len(words) == 4 else "%Y-%m-%d")
+            until = datetime.strptime(text, "%Y-%m-%d %H:%M" if len(words) == 4 else "%Y-%m-%d").replace(
+                tzinfo=self.tz())
         except ValueError:
             raise Usage(f"expected YYYY-MM-DD [HH:MM], got {text!r}") from None
         self.post_ok("/mute", {"until": until.timestamp()})

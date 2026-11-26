@@ -3,14 +3,23 @@
 # ipmitool use is allowed. Keep in step with fanloop.commands.ROOT_COMMAND_LINES
 # (tests/test_deploy.py checks it).
 Defaults:fanloop !requiretty
-Cmnd_Alias FANLOOP_CMDS = \
+
+# Read-only, run about 8,600 times a day (three ipmitool reads every 30 s, the
+# offset every 60 s). Each sudo call would write three log lines (the command, a
+# PAM session opened and closed), about 26,000 lines a day, so these aren't logged.
+Cmnd_Alias FANLOOP_READS = \
     /usr/bin/racadm get system.thermalsettings.FanSpeedOffset, \
+    /usr/bin/ipmitool sdr type temperature, \
+    /usr/bin/ipmitool sdr type fan, \
+    /usr/bin/ipmitool dcmi power reading
+Defaults!FANLOOP_READS !syslog, !pam_session
+
+# The sets change the fans: rare, and still logged.
+Cmnd_Alias FANLOOP_SETS = \
     /usr/bin/racadm set system.thermalsettings.FanSpeedOffset 255, \
     /usr/bin/racadm set system.thermalsettings.FanSpeedOffset 0, \
     /usr/bin/racadm set system.thermalsettings.FanSpeedOffset 2, \
     /usr/bin/racadm set system.thermalsettings.FanSpeedOffset 1, \
-    /usr/bin/racadm set system.thermalsettings.FanSpeedOffset 3, \
-    /usr/bin/ipmitool sdr type temperature, \
-    /usr/bin/ipmitool sdr type fan, \
-    /usr/bin/ipmitool dcmi power reading
-fanloop ALL=(root) NOPASSWD: FANLOOP_CMDS
+    /usr/bin/racadm set system.thermalsettings.FanSpeedOffset 3
+
+fanloop ALL=(root) NOPASSWD: FANLOOP_READS, FANLOOP_SETS

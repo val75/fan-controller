@@ -425,6 +425,7 @@ def main(argv: Optional[List[str]] = None, sender=None, runner=None,
     from fanloop.alerts import Alerter, TelegramSender
     from fanloop.api import make_servers, serve
     from fanloop.busy import BusyDetector
+    from fanloop.clock import zone
     from fanloop.commands import CommandRunner
     from fanloop.config import load_config, load_secrets
     from fanloop.control import ControlConfig, Controller
@@ -451,9 +452,10 @@ def main(argv: Optional[List[str]] = None, sender=None, runner=None,
     try:
         store = Store(cfg.db_path, load_defaults())
         runner = runner or CommandRunner()
-        alerter = Alerter(sender, store)
-        marks, holds, watchdog = Marks(store), Holds(store), ReviewWatchdog(store)
-        service = Service(store, alerter, marks, holds, watchdog, dry_run=cfg.dry_run)
+        tz = zone(cfg.timezone)
+        alerter = Alerter(sender, store, tz=tz)
+        marks, holds, watchdog = Marks(store), Holds(store, tz=tz), ReviewWatchdog(store)
+        service = Service(store, alerter, marks, holds, watchdog, dry_run=cfg.dry_run, tz=tz)
         controller = Controller(store.current()[1], ControlConfig(
             blind_idle_power_w=cfg.blind_idle_power_w, blind_power_above_w=cfg.blind_power_above_w,
             blind_hold_s=cfg.blind_hold_s))

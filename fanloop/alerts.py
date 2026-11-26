@@ -8,7 +8,10 @@ import threading
 import time
 import urllib.parse
 import urllib.request
+from datetime import tzinfo
 from typing import Deque, Dict, Optional
+
+from fanloop.clock import DEFAULT_TZ, local, zone
 
 PREFIX = "[t4 fans] "
 _ALERT_LAST = "alert_last"
@@ -45,13 +48,14 @@ class Alerter:
     None of the public methods raise."""
 
     def __init__(self, sender, store, rate_limit_s: float = 1800, max_queue: int = 100, retry_s: float = 60,
-                 persist_s: float = 300):
+                 persist_s: float = 300, tz: Optional[tzinfo] = None):
         self.sender = sender
         self.store = store
         self.rate_limit_s = rate_limit_s
         self.max_queue = max_queue
         self.retry_s = retry_s
         self.persist_s = persist_s
+        self.tz = tz or zone(DEFAULT_TZ)
         self._queue: Deque[str] = collections.deque()
         self._in_flight: Optional[str] = None
         self._cond = threading.Condition()
@@ -199,7 +203,7 @@ class Alerter:
                 due = [(kind, inc) for kind, inc in self._incidents.items()
                        if not inc.get("alerted") and now - inc.get("opened_at", now) >= self.persist_s]
                 for kind, inc in due:
-                    since = time.strftime("%H:%M", time.localtime(inc["opened_at"]))
+                    since = local(inc["opened_at"], self.tz).strftime("%H:%M")
                     text = f"{inc.get('text') or kind} (ongoing since {since})"
                     self._enqueue(text)
                     inc["alerted"] = True

@@ -6,9 +6,11 @@ import unittest
 from datetime import datetime
 
 from fanloop import cli
+from fanloop.clock import zone
 from fanloop.holds import parse_until
 
-NOW = datetime(2026, 11, 24, 10, 0).timestamp()
+EET = zone("EET")
+NOW = datetime(2026, 11, 24, 10, 0, tzinfo=EET).timestamp()
 
 THRESHOLDS = {"low": 55, "medium": 65, "high": 78, "margin": 5, "hold_s": 180,
               "ambient_rules": [{"inlet_min": 28, "level": "medium"}]}
@@ -19,7 +21,7 @@ class FakeClient:
 
     def __init__(self, responses=None):
         self.calls = []
-        self.responses = {("GET", "/status"): (200, {"version": 1, "thresholds": THRESHOLDS})}
+        self.responses = {("GET", "/status"): (200, {"version": 1, "thresholds": THRESHOLDS, "timezone": "EET"})}
         self.responses.update(responses or {})
 
     def get(self, path, params=None):
@@ -187,14 +189,14 @@ class HoldMuteTest(unittest.TestCase):
         client = FakeClient({("POST", "/hold"): (200, {"hold": {}})})
         code, _ = run(["hold", "high", "until", "18:00"], client)
         self.assertEqual(code, 0)
-        until = parse_until("18:00", datetime.fromtimestamp(NOW)).timestamp()
+        until = parse_until("18:00", datetime.fromtimestamp(NOW, EET)).timestamp()
         self.assertEqual(client.posts(), [("/hold", {"level": "high", "until": until})])
 
     def test_hold_until_a_date_and_time(self):
         client = FakeClient({("POST", "/hold"): (200, {"hold": {}})})
         run(["hold", "medium", "until", "2026-11-25", "09:30"], client)
         self.assertEqual(client.posts(), [("/hold", {"level": "medium",
-                                                     "until": datetime(2026, 11, 25, 9, 30).timestamp()})])
+                                                     "until": datetime(2026, 11, 25, 9, 30, tzinfo=EET).timestamp()})])
 
     def test_hold_until_cancelled(self):
         client = FakeClient({("POST", "/hold"): (200, {"hold": {}})})
@@ -223,7 +225,7 @@ class HoldMuteTest(unittest.TestCase):
         client = FakeClient({("POST", "/mute"): (200, {})})
         code, _ = run(["mute", "reviews", "until", "2026-12-01"], client)
         self.assertEqual(code, 0)
-        self.assertEqual(client.posts(), [("/mute", {"until": datetime(2026, 12, 1).timestamp()})])
+        self.assertEqual(client.posts(), [("/mute", {"until": datetime(2026, 12, 1, tzinfo=EET).timestamp()})])
 
     def test_mute_off(self):
         client = FakeClient({("POST", "/mute/off"): (200, {})})

@@ -68,19 +68,28 @@ class TestSudoers(unittest.TestCase):
     def setUp(self):
         self.text = (DEPLOY / "sudoers-fan-controller").read_text()
 
-    def commands(self):
+    def alias(self, name):
         joined = re.sub(r"\\\n\s*", " ", self.text)
-        (alias,) = re.findall(r"^Cmnd_Alias FANLOOP_CMDS = (.+)$", joined, re.M)
+        (alias,) = re.findall(rf"^Cmnd_Alias {name} = (.+)$", joined, re.M)
         return [c.strip() for c in alias.split(",")]
 
     def test_exactly_the_nine_root_command_lines(self):
-        self.assertEqual(self.commands(), list(ROOT_COMMAND_LINES))
+        reads, sets = self.alias("FANLOOP_READS"), self.alias("FANLOOP_SETS")
+        self.assertEqual(sorted(reads + sets), sorted(ROOT_COMMAND_LINES))
+        self.assertEqual(len(reads + sets), 9)
+        self.assertTrue(all(" set " in c for c in sets) and len(sets) == 5)
+        self.assertTrue(all(" set " not in c for c in reads) and len(reads) == 4)
 
     def test_no_wildcards_or_extra_grants(self):
         self.assertNotIn("*", self.text)
         rules = [line for line in self.text.splitlines() if line.startswith("fanloop ")]
-        self.assertEqual(rules, ["fanloop ALL=(root) NOPASSWD: FANLOOP_CMDS"])
+        self.assertEqual(rules, ["fanloop ALL=(root) NOPASSWD: FANLOOP_READS, FANLOOP_SETS"])
         self.assertIn("Defaults:fanloop !requiretty", self.text)
+
+    def test_reads_are_not_logged_but_sets_are(self):
+        # Each sudo call writes three log lines; the reads run ~8,600 times a day.
+        defaults = [line for line in self.text.splitlines() if line.startswith("Defaults!")]
+        self.assertEqual(defaults, ["Defaults!FANLOOP_READS !syslog, !pam_session"])
 
 
 class TestConfigCheck(unittest.TestCase):

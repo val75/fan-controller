@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Union
 
+from fanloop.clock import DEFAULT_TZ, zone
+
 
 @dataclass(frozen=True)
 class Config:
@@ -36,6 +38,8 @@ class Config:
     nvidia_fail_polls: int = 3
     api_retry_s: float = 60.0  # how often to retry starting the API if it couldn't
     llama_health_url: str = "http://127.0.0.1:8080/health"
+    # Every clock time the loop shows or reads (holds, messages, fanctl); t4 runs in UTC
+    timezone: str = DEFAULT_TZ
     # Backup to docks (an empty target disables the copy)
     backup_target: str = ""
     backup_key: str = "/etc/fan-controller/secrets/docks_ed25519"
@@ -61,7 +65,9 @@ def load_config(path: Union[str, Path]) -> Config:
               else isinstance(value, str))
         if not ok:
             raise ValueError(f"config {key} must be a {type(default).__name__}, got {value!r}")
-    return Config(**{k: (float(v) if isinstance(getattr(Config, k), float) else v) for k, v in data.items()})
+    cfg = Config(**{k: (float(v) if isinstance(getattr(Config, k), float) else v) for k, v in data.items()})
+    zone(cfg.timezone)  # ValueError for an unknown zone
+    return cfg
 
 
 @dataclass(frozen=True)

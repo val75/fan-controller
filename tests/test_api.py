@@ -91,6 +91,9 @@ class TestReads(ApiTest):
         self.assertTrue(body["dry_run"])
         self.assertIsNone(body["hold"])
 
+    def test_status_says_the_loops_time_zone(self):
+        self.assertEqual(self.request("GET", "/status")[1]["timezone"], "EET")
+
     def test_status_over_socket(self):
         status, body = self.request("GET", "/status", local=True)
         self.assertEqual((status, body["version"]), (200, 1))
@@ -283,6 +286,13 @@ class TestSocket(ApiTest):
         sent = self.sent()
         self.assertIn(PREFIX + "Hold at Medium, until cancelled", sent)
         self.assertIn(PREFIX + "Hold ended", sent)
+
+    def test_timed_hold_text_is_in_the_loops_zone(self):
+        from fanloop.clock import local, zone
+        until = time.time() + 3600
+        self.assertEqual(self.request("POST", "/hold", {"level": "high", "until": until}, local=True)[0], 200)
+        shown = local(until, zone("EET")).strftime("%H:%M")
+        self.assertTrue(any(s.startswith(PREFIX + "Hold at High until") and shown in s for s in self.sent()))
 
     def test_timed_hold_too_far(self):
         status, body = self.request("POST", "/hold", {"level": "medium", "until": time.time() + 3 * 86400}, local=True)

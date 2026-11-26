@@ -1,7 +1,10 @@
 """One facade over the loop's state, shared by the daemon and both HTTP servers."""
 import threading
 import time
+from datetime import tzinfo
 from typing import Dict, List, Optional
+
+from fanloop.clock import DEFAULT_TZ, clock_text, local, zone
 
 from fanloop.levels import Level
 from fanloop.policy import WriteRequest, WriteResult, apply_write, qualifying_episodes
@@ -37,13 +40,9 @@ def describe_change(c: Change) -> str:
     return f"{c.param} {c.from_} → {c.to}"
 
 
-def _when(ts: float, now: float) -> str:
-    t, n = time.localtime(ts), time.localtime(now)
-    return time.strftime("%H:%M" if t[:3] == n[:3] else "%a %H:%M", t)
-
-
 class Service:
-    def __init__(self, store, alerter, marks, holds, watchdog, dry_run: bool):
+    def __init__(self, store, alerter, marks, holds, watchdog, dry_run: bool, tz: Optional[tzinfo] = None):
+        self.tz = tz or zone(DEFAULT_TZ)
         self.store = store
         self.alerter = alerter
         self.marks = marks
@@ -111,7 +110,7 @@ class Service:
             hold = self.holds.set(level, until_ts, now)
             name = level.name.capitalize()
             self.alerter.notify(f"Hold at {name}, until cancelled" if until_ts is None
-                                else f"Hold at {name} until {_when(until_ts, now)}", now)
+                                else f"Hold at {name} until {clock_text(until_ts, now, self.tz)}", now)
             return hold
 
     def hold_clear(self, now: float):
@@ -124,8 +123,8 @@ class Service:
     def mute(self, until_ts: float, now: float) -> None:
         with self._lock:
             self.watchdog.mute(until_ts, now)
-            t = time.localtime(until_ts)
-            shown = time.strftime("%Y-%m-%d" if (t.tm_hour, t.tm_min) == (0, 0) else "%Y-%m-%d %H:%M", t)
+            t = local(until_ts, self.tz)
+            shown = t.strftime("%Y-%m-%d" if (t.hour, t.minute) == (0, 0) else "%Y-%m-%d %H:%M")
             self.alerter.notify(f"Review watchdog muted until {shown}", now)
 
     def unmute(self, now: float) -> None:
@@ -147,6 +146,7 @@ class Service:
         with self._lock:
             out = dict(self._snapshot)
             out["dry_run"] = self.dry_run
+            out["timezone"] = str(self.tz)
             try:  # the loop's own snapshot still answers when the database doesn't
                 version, t = self.store.current()
                 hold = self.holds.current(now)

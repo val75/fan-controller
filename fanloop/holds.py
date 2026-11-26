@@ -1,10 +1,10 @@
 """Manual holds (spec 5.2): a minimum fan level set by the user with fanctl."""
 import re
-import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, tzinfo
 from typing import Optional
 
+from fanloop.clock import DEFAULT_TZ, local, zone
 from fanloop.levels import Level, level_from_name
 from fanloop.messages import Message
 
@@ -21,22 +21,23 @@ class Hold:
 
 def parse_until(text: str, now: datetime) -> datetime:
     """'HH:MM' is the next time that clock time comes round; 'YYYY-MM-DD HH:MM' is
-    a full date and time. Both are local time."""
+    a full date and time. Both are in now's time zone (the loop's, see clock.py)."""
     text = text.strip()
     if re.fullmatch(r"\d{1,2}:\d{2}", text):
         t = datetime.strptime(text, "%H:%M")
         candidate = now.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
         return candidate if candidate > now else candidate + timedelta(days=1)
     if re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{1,2}:\d{2}", text):
-        return datetime.strptime(text, "%Y-%m-%d %H:%M")
+        return datetime.strptime(text, "%Y-%m-%d %H:%M").replace(tzinfo=now.tzinfo)
     raise ValueError(f"expected HH:MM or YYYY-MM-DD HH:MM, got {text!r}")
 
 
 class Holds:
     """The hold lives in the store's kv, so a restart keeps it."""
 
-    def __init__(self, store, max_ahead_s: float = 86400, remind_s: float = 86400):
+    def __init__(self, store, max_ahead_s: float = 86400, remind_s: float = 86400, tz: Optional[tzinfo] = None):
         self.store = store
+        self.tz = tz or zone(DEFAULT_TZ)
         self.max_ahead_s = max_ahead_s
         self.remind_s = remind_s
 
@@ -95,6 +96,6 @@ class Holds:
         if now - last < self.remind_s:
             return None
         self.store.kv_set(_LAST_REMINDER, now)
-        since = time.strftime("%a %H:%M", time.localtime(hold.since))
+        since = local(hold.since, self.tz).strftime("%a %H:%M")
         return Message("hold-reminder", f"Hold at {hold.level.name.capitalize()} since {since}, until cancelled. "
                                         "fanctl hold off to end it")

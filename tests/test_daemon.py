@@ -622,6 +622,14 @@ class TestConfig(unittest.TestCase):
         with self.assertRaises(ValueError):
             load_config(f.name)
 
+    def test_timezone_default_and_unknown(self):
+        self.assertEqual(Config().timezone, "EET")
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump({"timezone": "Mars/Olympus"}, f)
+        self.addCleanup(os.unlink, f.name)
+        with self.assertRaises(ValueError):
+            load_config(f.name)
+
     def test_wrong_type(self):
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
             json.dump({"dry_run": "no", "listen_port": "8780"}, f)

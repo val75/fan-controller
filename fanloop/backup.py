@@ -11,6 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 from fanloop.alerts import PREFIX, TelegramSender
+from fanloop.clock import zone
 from fanloop.commands import CommandRunner
 from fanloop.config import Config, load_config, load_secrets
 
@@ -93,7 +94,7 @@ def main(argv) -> int:
     cfg = load_config(args.config)
     secrets = load_secrets(cfg.secrets_dir)
     sender = TelegramSender(secrets.telegram_token, secrets.telegram_chat_id)
-    return 0 if run_backup(cfg, datetime.now(), CommandRunner(), sender) else 1
+    return 0 if run_backup(cfg, datetime.now(zone(cfg.timezone)), CommandRunner(), sender) else 1
 
 
 if __name__ == "__main__":

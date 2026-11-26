@@ -21,6 +21,7 @@
   "nvidia_fail_polls": 3,
   "api_retry_s": 60.0,
   "llama_health_url": "http://127.0.0.1:8080/health",
+  "timezone": "EET",
   "backup_target": "",
   "backup_key": "/etc/fan-controller/secrets/docks_ed25519",
   "backup_known_hosts": "/etc/fan-controller/known_hosts",
