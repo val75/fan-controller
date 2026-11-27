@@ -4,6 +4,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -447,6 +448,27 @@ class TestDaily(LoopFixture):
         self.assertEqual(code, 1)
         self.assertEqual(out.strip().count("\n"), 0)
         self.assertTrue(out.startswith("Can't reach the fan loop:"), out)
+
+
+class TestSkillAndScripts(unittest.TestCase):
+    def test_skill_names_every_command_by_full_path(self):
+        with open(os.path.join(REPO, "hermes/skill/fan-controller/SKILL.md"), encoding="utf-8") as f:
+            text = f.read()
+        self.assertTrue(text.startswith("---\nname: fan-controller\ndescription:"))
+        for sub in ("status", "episodes", "compare", "changes", "write", "note"):
+            self.assertIn(f"python3 /home/hermes/.hermes/scripts/fan.py {sub}", text)
+        self.assertNotRegex(text, r"python3? -c|<<")
+        self.assertLessEqual(text.count("\n"), 130)
+        with open(os.path.join(REPO, "hermes/prompts/review.md"), encoding="utf-8") as f:
+            self.assertIn("fan-controller skill", f.read())
+
+    def test_scripts_run_isolated(self):
+        # Hermes runs .py scripts with -I: the script's own folder isn't on sys.path.
+        for script in ("fan.py", "fan_review.py", "fan_daily.py"):
+            r = subprocess.run([sys.executable, "-I", os.path.join(SCRIPTS, script), "--help"],
+                               capture_output=True, text=True, timeout=20)
+            self.assertNotIn("ModuleNotFoundError", r.stderr, script)
+            self.assertEqual(r.returncode, 0, script + r.stderr)
 
 
 if __name__ == "__main__":
