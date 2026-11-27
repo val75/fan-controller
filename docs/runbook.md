@@ -98,6 +98,7 @@ it lasts 5 minutes, then it's sent marked "(ongoing since HH:MM)".
 | Message | Meaning | What to do |
 |---|---|---|
 | Fan loop started: … | the loop (re)started; shows offset, mode, thresholds version | nothing, unless it repeats: `journalctl -u fan-controller` |
+| Fan loop stopping. … | stopped on purpose (systemd stop, a redeploy) | nothing; until it starts again, nothing raises the fans |
 | Emergency: … Fans to Max. | ≥ 80°C or a thermal slowdown flag | the loop handles it; check the load if it repeats |
 | Thermal slowdown on card N | a card is throttling | as above |
 | At Max and still rising | the fans can't keep up | reduce the load |

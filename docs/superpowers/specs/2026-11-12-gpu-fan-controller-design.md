@@ -437,6 +437,9 @@ the user chose Telegram, so no relay is needed.
 - **Threshold changes:** every accepted change, from any source (5.9), with the version
   numbers (e.g. "thresholds v7 → v8: Medium 65 → 63°C, source review: …").
 - **Recovery:** one "back to normal" message per incident.
+- **Clean stop** *(decided 2026-11-27)*: one message when the loop stops on purpose (systemd stop,
+  a redeploy): the fans stay where they are and nothing watches the cards until it starts again.
+  A crash or power cut can't send one; the next "started" message shows it.
 - **No message per ordinary step change.** Repeated alerts of the same kind are rate-limited
   (e.g. at most one per 30 min per kind) *(my call)*.
 - If Telegram can't be reached: log it and retry. Never block the control loop.

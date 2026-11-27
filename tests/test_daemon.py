@@ -566,6 +566,14 @@ class TestMain(unittest.TestCase):
         self.assertTrue(any(t.startswith("Fan loop started") for t in texts), texts)
         self.assertTrue(any(t.startswith("The loop's API couldn't start") for t in texts), texts)
 
+    def test_a_clean_stop_says_so(self):
+        self.blocker.close()
+        self.assertEqual(self.run_main(dry_run=False), 0)  # the Timer stands in for SIGTERM
+        stops = [t for t in self.texts() if t.startswith("Fan loop stopping")]
+        self.assertEqual(len(stops), 1, self.texts())
+        self.assertIn("no emergency rule until it starts again", stops[0])
+        self.assertEqual(self.texts()[-1], stops[0])
+
     def test_a_startup_failure_is_reported_once_not_on_every_restart(self):
         self.blocker.close()
         bad_db = os.path.join(self.dir, "no-such-dir", "fan.db")

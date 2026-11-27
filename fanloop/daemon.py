@@ -487,6 +487,11 @@ def main(argv: Optional[List[str]] = None, sender=None, runner=None,
         loop.run_forever(stop)
     finally:
         sd_notify("STOPPING=1")
+        if stop.is_set():  # a clean stop (SIGTERM); a crash can't be told apart from here
+            where = ("dry-run, so the loop never set them" if cfg.dry_run
+                     else f"at {_name(loop.current_level).capitalize()}")
+            alerter.notify(f"Fan loop stopping. The fans stay where they are ({where}); "
+                           "no emergency rule until it starts again.", time.time())
         stop.set()
         api.close()
         alerter.drain(5)
