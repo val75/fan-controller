@@ -305,12 +305,26 @@ def _version_line(v: dict) -> str:
     return f"v{v['version'] - 1} → v{v['version']} {v.get('source')}: {changes} ({_one_line(v.get('reason') or '', 200)})"
 
 
-def _stats_line(version, s: dict) -> str:
+def _stats_line(label: str, s: dict) -> str:
     dur = "" if s["duration"] is None else f", {s['duration'][0] / 60:.0f}–{s['duration'][1] / 60:.0f} min"
     inlet = "" if s["inlet"] is None else f", inlet {_t(s['inlet'][0])}–{_t(s['inlet'][1])}°C"
-    return (f"v{version} stats: {s['n']} episodes ({s['qualifying']} qualifying){dur}{inlet}, "
+    return (f"{label}: {s['n']} episodes ({s['qualifying']} qualifying){dur}{inlet}, "
             f"slowdown {s['slowdown_per_h']:.0f} s per busy hour, loud (High/Max) {s['loud_share'] * 100:.0f}% "
             f"of the time, {s['changes_per_h']:.1f} level changes per hour")
+
+
+def now_lines(status: dict) -> List[str]:
+    """The report's first two lines: what the fans do now, and any problems."""
+    return [f"Now: {status.get('level') or 'unknown'} ({status.get('reason') or '?'}), {_cards(status)}, "
+            f"inlet {_t(status.get('inlet_c'))}°C, {_thresholds(status)}",
+            "Problems: " + (", ".join(_problems(status)) or "none")]
+
+
+def settle_line(settle: Dict[str, dict]) -> str:
+    return "Settles above inlet (qualifying episodes): " + ("; ".join(
+        f"{level.capitalize()} +{v['median']:.1f}°C (n {v['n']}, {v['min']:.1f}–{v['max']:.1f})"
+        for level, v in sorted(settle.items(), key=lambda kv: LEVELS.index(kv[0]) if kv[0] in LEVELS else 9))
+        or "not enough data")
 
 
 def review_report(status: dict, summary: dict, eps_since: List[dict], eps_current: List[dict],
@@ -318,9 +332,7 @@ def review_report(status: dict, summary: dict, eps_since: List[dict], eps_curren
                   truncated: bool = False) -> str:
     tz = status.get("timezone") or "EET"
     version = status.get("version", "?")
-    lines = [f"Now: {status.get('level') or 'unknown'} ({status.get('reason') or '?'}), {_cards(status)}, "
-             f"inlet {_t(status.get('inlet_c'))}°C, {_thresholds(status)}",
-             "Problems: " + (", ".join(_problems(status)) or "none")]
+    lines = now_lines(status)
 
     head = f"Since last review ({fmt_time(since, tz)}): "
     if eps_since:
@@ -337,14 +349,10 @@ def review_report(status: dict, summary: dict, eps_since: List[dict], eps_curren
     cur = version_stats(eps_current)
     lines.append(f"On v{version}: {cur['qualifying']} qualifying episodes (loop's count: "
                  f"{summary.get('qualifying_on_current', '?')}; a quieter review change needs 3)")
-    lines.append(_stats_line(version, cur))
+    lines.append(_stats_line(f"v{version} stats", cur))
 
     seen = {e.get("start") for e in eps_current}
-    settle = settle_by_level(eps_current + [e for e in eps_since if e.get("start") not in seen])
-    lines.append("Settles above inlet (qualifying episodes): " + ("; ".join(
-        f"{level.capitalize()} +{v['median']:.1f}°C (n {v['n']}, {v['min']:.1f}–{v['max']:.1f})"
-        for level, v in sorted(settle.items(), key=lambda kv: LEVELS.index(kv[0]) if kv[0] in LEVELS else 9))
-        or "not enough data"))
+    lines.append(settle_line(settle_by_level(eps_current + [e for e in eps_since if e.get("start") not in seen])))
 
     lines.append("After step-ups:" + ("" if steps else " none"))
     for st in steps[-5:]:

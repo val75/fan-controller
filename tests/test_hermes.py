@@ -25,6 +25,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(REPO, "hermes", "scripts")
 sys.path.insert(0, SCRIPTS)
 
+import fan  # noqa: E402
 import fan_review  # noqa: E402
 import fanlib  # noqa: E402
 
@@ -331,6 +332,95 @@ class TestReviewScript(LoopFixture):
         lines = out.strip().splitlines()
         self.assertEqual(lines[0], "Review data incomplete: Can't reach the fan loop: x")
         self.assertEqual(lines[-1], '{"wakeAgent": false}')
+
+
+def fan_review_main_quietly(test):
+    with contextlib.redirect_stdout(io.StringIO()):
+        test.assertEqual(fan_review.main([], settings_path=test.settings_path), 0)
+
+
+class TestFanCli(LoopFixture):
+    def cli(self, *argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = fan.main(list(argv), settings_path=self.settings_path)
+        return code, out.getvalue()
+
+    def test_status(self):
+        code, out = self.cli("status")
+        self.assertEqual(code, 0)
+        self.assertIn("thresholds v1", out)
+        self.assertIn("Problems: none", out)
+
+    def test_louder_review_write_applies(self):
+        code, out = self.cli("write", "--source", "review", "--reason", "test", "hold_s", "180", "190")
+        self.assertEqual(code, 0)
+        self.assertIn("Applied: v1 → v2: hold_s 180 → 190", out)
+        self.assertEqual(self.loop_store.current()[1].hold_s, 190)
+
+    def test_rejected_write_shows_reason_and_current_values(self):
+        code, out = self.cli("write", "--source", "review", "--reason", "t", "step_up.low", "50", "54")
+        self.assertEqual(code, 2)
+        self.assertIn("Rejected (stale)", out)
+        self.assertIn("Current thresholds v1", out)
+        self.assertIn("Nothing was changed", out)
+        code, out = self.cli("write", "--source", "review", "--reason", "t", "step_up.low", "55", "57")
+        self.assertIn("Rejected (evidence)", out)       # quieter, no qualifying episodes
+
+    def test_user_chat_write_with_two_changes(self):
+        code, out = self.cli("write", "--source", "user-chat", "--reason", "t",
+                             "step_up.medium", "65", "60", "step_up.low", "55", "52")
+        self.assertEqual(code, 0)
+        self.assertEqual((self.loop_store.current()[1].medium, self.loop_store.current()[1].low), (60, 52))
+        code, out = self.cli("write", "--source", "review", "--reason", "t", "margin", "5")
+        self.assertEqual((code, out.startswith("Bad value")), (1, True))
+
+    def test_ambient_add_and_bad_value(self):
+        code, out = self.cli("write", "--source", "user-chat", "--reason", "t", "ambient.add", "none", "30:high")
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self.loop_store.current()[1].ambient_rules[0].to_dict(), {"inlet_min": 30, "level": "high"})
+        code, out = self.cli("write", "--source", "review", "--reason", "t", "margin", "five", "6")
+        self.assertEqual((code, out.startswith("Bad value")), (1, True))
+
+    def test_write_without_token_is_one_line_error(self):
+        os.remove(self.token_path)
+        code, out = self.cli("write", "--source", "review", "--reason", "t", "hold_s", "180", "190")
+        self.assertEqual((code, out.strip()), (1, f"No write token at {self.token_path}"))
+
+    def test_note_ends_the_review(self):
+        fan_review_main_quietly(self)                      # opens the mark, sets state
+        started = fanlib.State(self.state_dir).load()["last_review_started_at"]
+        path = self.write_file("note.md", "What: no change. Why: idle. Next: watch Medium.")
+        code, out = self.cli("note", path)
+        self.assertEqual(code, 0)
+        self.assertIn("review end recorded", out)
+        self.assertEqual(self.loop_store.marks_open(), [])
+        self.assertFalse(os.path.exists(path))
+        self.assertEqual(fanlib.State(self.state_dir).notes(1)[0]["text"][:5], "What:")
+        self.assertEqual(fanlib.State(self.state_dir).load()["last_review_at"], started)
+
+    def test_note_saved_even_when_mark_already_closed(self):
+        fan_review_main_quietly(self)
+        self.loop().post("/marks/start", {})               # supersedes the review's mark
+        path = self.write_file("note.md", "late")
+        code, out = self.cli("note", path)
+        self.assertEqual(code, 0)
+        self.assertIn("already closed", out)
+        self.assertEqual(fanlib.State(self.state_dir).notes(1)[0]["text"], "late")
+        self.assertNotIn("last_review_at", fanlib.State(self.state_dir).load())
+        self.assertTrue(os.path.exists(path))
+
+    def test_compare_and_changes_run(self):
+        self.cli("write", "--source", "user-chat", "--reason", "louder", "hold_s", "180", "190")
+        code, out = self.cli("compare", "1", "2")
+        self.assertEqual(code, 0)
+        self.assertIn("not enough data", out)
+        code, out = self.cli("changes")
+        self.assertEqual(code, 0)
+        self.assertIn("v1 → v2 user-chat: hold_s 180 → 190 (louder)", out)
+        code, out = self.cli("episodes", "--days", "3")
+        self.assertEqual(code, 0)
+        self.assertIn("not enough data", out)
 
 
 if __name__ == "__main__":
