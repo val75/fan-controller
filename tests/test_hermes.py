@@ -26,6 +26,7 @@ SCRIPTS = os.path.join(REPO, "hermes", "scripts")
 sys.path.insert(0, SCRIPTS)
 
 import fan  # noqa: E402
+import fan_daily  # noqa: E402
 import fan_review  # noqa: E402
 import fanlib  # noqa: E402
 
@@ -421,6 +422,31 @@ class TestFanCli(LoopFixture):
         code, out = self.cli("episodes", "--days", "3")
         self.assertEqual(code, 0)
         self.assertIn("not enough data", out)
+
+
+class TestDaily(LoopFixture):
+    def run_main(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = fan_daily.main([], settings_path=self.settings_path)
+        return code, out.getvalue()
+
+    def test_summary_lines(self):
+        self.loop().post("/thresholds", {"source": "review", "reason": "t",
+                                          "changes": [{"param": "hold_s", "from": 180, "to": 190}]})
+        code, text = self.run_main()
+        self.assertEqual(code, 0)
+        self.assertTrue(text.startswith("Fans, last 24 h:"))
+        self.assertIn("v1 → v2", text)
+        self.assertNotIn("Problems", text.split("\n")[1])
+        self.assertEqual(self.loop_store.marks_open(), [])  # no mark: not a model run
+
+    def test_unreachable(self):
+        self.point_settings_at("http://127.0.0.1:9")
+        code, out = self.run_main()
+        self.assertEqual(code, 1)
+        self.assertEqual(out.strip().count("\n"), 0)
+        self.assertTrue(out.startswith("Can't reach the fan loop:"), out)
 
 
 if __name__ == "__main__":
