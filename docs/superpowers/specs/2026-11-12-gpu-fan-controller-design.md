@@ -72,7 +72,8 @@ things through Hermes later, so its setup should suit more than this job.
 - Under load, the cards pass 55°C ~15–25 s after load starts (cold start, fan offset Off or
   Medium).
 - Idle: both cards read 53°C (0% utilization, ~28 W) at a 17°C inlet (one reading,
-  2026-11-13; not yet confirmed as the steady idle temperature). See the open item in 5.3.
+  2026-11-13). **Measured over 25 h of dry-run (2026-11-26/27):** 40–41°C at an 11–12°C
+  inlet, fans Off (see 5.3).
 - A driver update can leave `nvidia-smi` failing ("Driver/library version mismatch") until a
   reboot, while running CUDA processes such as llama-server keep working. On 2026-11-16
   unattended-upgrades had already tried to install a newer driver build from
@@ -113,9 +114,13 @@ next to `sustained_load.py`, the load generator used for the tests.
 - Local sensors: `sudo ipmitool sdr type temperature` (inlet, exhaust, CPU) and `sdr type fan`.
   The iDRAC has **no GPU temperatures** (CPU only).
 - System power: `sudo ipmitool sdr type Current` (`Pwr Consumption`) or `sudo ipmitool dcmi
-  power reading`: 238 W with both cards idle (2026-11-13). Both cards under load should add
-  roughly 85 W (from ~28 W each to the 70 W cap; estimated, not measured). This is a load
-  signal that doesn't depend on the NVIDIA driver (used in 7).
+  power reading`: 238 W with both cards idle (2026-11-13). **Measured 2026-11-27:** idle
+  231–243 W (median 235 over 24 h); both cards under sustained load at Medium 320–351 W
+  (median 349), about +115 W. This is a load signal that doesn't depend on the NVIDIA driver
+  (used in 7).
+- Fan speeds (2026-11-27, 11–12°C inlet): Off and Low both ~7,200 RPM, idle and under load;
+  Medium ~9,500 RPM, reached about a minute after the set. So at a cold inlet Low adds no
+  airflow; it only raises the iDRAC's floor.
 - Redfish has no settings endpoint on this firmware. Config export/import jobs take 60–80 s,
   so they're not usable here.
 - Other iDRAC thermal settings (`ThermalProfile`, `MinimumFanSpeed`,
@@ -197,7 +202,9 @@ every poll.
   Power ties busy to heat; utilization catches loads that draw little power. Calibrated on
   the 2026-11-09 logs: idle 26–32 W (short spikes to 48 W right after load) and 0%;
   sustained load ~69 W median and 98–99%, with dips between requests of up to 17 s, which
-  the 60 s end delay bridges. The numbers are a starting point, to be checked by replay (8)
+  the 60 s end delay bridges. **Live test 2026-11-27:** a 15-min load gave exactly one
+  episode, starting 20 s after the load began and ending 64 s after it stopped, as these
+  numbers predict, so they stay. The numbers are a starting point, to be checked by replay (8)
   and the live test.
 - **Stepping down while busy is stricter** *(decided 2026-11-22)*: while busy, step down from
   a level only when the hotter card has stayed below **the step-up temperature of the level
@@ -268,11 +275,17 @@ then Medium. Up to an inlet of about 18°C, Medium holds below High (at ~17°C, 
 Above that, sustained loads step up to High and stay there until the load ends. A short
 burst steps back down a few minutes after it ends.
 
-**Open: idle temperature.** On 2026-11-13 both cards read 53°C at idle with a 17°C inlet
-(section 3); on 2026-11-22, 45°C (inlet not read). If that's the steady idle temperature, Low (55°C) is reached while idle at a
-slightly warmer inlet, and leaving Low (below 50°C) may never happen: the fans would stay at
-Low, not Off. Before the Low threshold and the margin are fixed, measure the cards after a
-long idle at Off, at a few different inlets.
+**Idle temperature (closed 2026-11-27, with the user).** 25 h of dry-run at Off: the hotter
+card 40–41°C at an 11–12°C inlet, 14°C below Low's 55°C. No threshold changes. The earlier
+53°C reading (2026-11-13) wasn't the steady idle. Only cold inlets are measured: at a summer
+inlet idle may come close to 55°C; the ambient rules and Hermes's reviews cover that.
+
+**Live test (2026-11-27, real control, 12°C inlet, 15-min sustained load):** Off → Low 20 s
+into the episode (55°C), → Medium 55 s later (65°C); card 0 settled at 72–73°C (card 1
+68–69°C) on Medium, 5°C below High; no thermal slowdown, decode steady at ~17.1 t/s; two
+level changes under load. After the load: busy ended after 60 s, then Medium → Low → Off,
+one level every 3 min 5 s. No alerts. Medium is near its limit at this inlet: a warmer inlet
+takes the same load to High.
 
 ### 5.4 Hard limits (enforced by the loop, not by Hermes) *(my call)*
 - Step-up temperatures between **45 and 78°C**, strictly increasing, at least **3°C** apart.
@@ -637,7 +650,8 @@ applied:
   live test, with the reason recorded.
 - Analysis script design, and how Hermes's change log is stored.
 - For "blind with load" (7): the power threshold above idle and how long it must last. Set
-  them from a measurement during the live test.
+  from the live test (2026-11-27): idle 235 W, threshold +50 W (285 W), halfway between
+  idle's highest reading (243 W) and load's lowest (320 W); held for 30 s.
 - Timeout values, and how stuck child processes are cleaned up.
 - How the CLI talks to the loop locally, and its command names.
 - For the backup: the account and folder names on `docks`, how many copies to keep, and how

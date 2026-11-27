@@ -16,7 +16,7 @@ _STEP_LEVELS = (Level.LOW, Level.MEDIUM, Level.HIGH)
 @dataclass(frozen=True)
 class ControlConfig:
     single_card1_offset_c: float = 4.0  # card 0 runs ~3-4°C warmer than card 1
-    blind_idle_power_w: float = 238.0
+    blind_idle_power_w: float = 235.0  # measured 2026-11-27 (spec 3)
     blind_power_above_w: float = 50.0
     blind_hold_s: float = 30.0
 

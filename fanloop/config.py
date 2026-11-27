@@ -31,7 +31,7 @@ class Config:
     racadm_timeout_s: float = 10.0     # each racadm call
     racadm_set_budget_s: float = 25.0  # one set with its read-back and retries
     # Blind rule (spec 7), to be set from the live measurement
-    blind_idle_power_w: float = 238.0
+    blind_idle_power_w: float = 235.0  # measured 2026-11-27 (spec 3)
     blind_power_above_w: float = 50.0
     blind_hold_s: float = 30.0
     # Failure handling and health
