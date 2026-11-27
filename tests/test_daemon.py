@@ -220,7 +220,7 @@ class TestRestartMidIncident(LoopTest):
         self.messages()
         self.sensors.cards = cards(82, busy=True)
         self.run_for(10)
-        self.assertEqual(self.offset.sets, [])
+        self.assertEqual(self.offset.sets, [Level.MAX])  # only the startup check-set
         self.assertTrue(any(m.startswith("Emergency:") for m in self.messages()))
 
     def test_emergency_with_a_failing_set_is_not_called_over(self):
@@ -232,6 +232,35 @@ class TestRestartMidIncident(LoopTest):
         msgs = self.messages()
         self.assertTrue(any(m.startswith("Emergency:") for m in msgs))
         self.assertFalse(any(m.startswith("Emergency over") for m in msgs), msgs)
+
+    def test_racadm_open_across_a_restart_closes_and_the_next_one_alerts(self):
+        # Review 2, I2: the new run's offset already matched the target, so no set
+        # happened, nothing closed the incident, and the next failure stayed silent.
+        self.make()
+        self.offset.fail_sets = 100
+        self.sensors.cards = cards(70, busy=True)
+        self.run_for(10)
+        self.assertTrue(any(m.startswith("racadm couldn't set") for m in self.messages()))
+        self.restart(Level.OFF)
+        self.sensors.cards = cards(45, busy=False)
+        self.run_for(10)
+        self.run_for(3600)
+        self.offset.fail_sets = 100
+        self.sensors.cards = cards(70, busy=True)
+        self.run_for(10)
+        self.assertTrue(any(m.startswith("racadm couldn't set") for m in self.messages()))
+
+    def test_store_open_across_a_restart_closes_and_the_next_one_alerts(self):
+        self.make()
+        repair = break_store(self.store, ("add_sample",))  # the incident itself is saved
+        self.run_for(10)
+        self.assertTrue(any(m.startswith("The loop can't use its database") for m in self.messages()))
+        repair()
+        self.restart(Level.OFF)
+        self.run_for(3600)
+        repair = break_store(self.store, ("add_sample",))
+        self.run_for(10)
+        self.assertTrue(any(m.startswith("The loop can't use its database") for m in self.messages()))
 
     def test_max_not_enough_open_across_a_restart_closes_when_not_at_max(self):
         self.make()
@@ -251,11 +280,11 @@ class TestStartup(LoopTest):
         self.make(start_level=Level.MAX)
         self.sensors.cards = cards(70, busy=True)
         self.run_for(175)
-        self.assertEqual(self.offset.sets, [])
+        self.assertEqual(self.offset.sets, [Level.MAX])  # the startup check-set
         self.run_for(10)
-        self.assertEqual(self.offset.sets, [Level.HIGH])
+        self.assertEqual(self.offset.sets, [Level.MAX, Level.HIGH])
         self.run_for(600)
-        self.assertEqual(self.offset.sets, [Level.HIGH])  # busy at 70°C: High holds
+        self.assertEqual(self.offset.sets, [Level.MAX, Level.HIGH])  # busy at 70°C: High holds
 
     def test_unreadable_offset_sets_on_first_step(self):
         loop = self.make()
@@ -275,7 +304,8 @@ class TestControl(LoopTest):
             self.sensors.cards = cards(temp)
             self.loop.step()
             self.clock.advance(5)
-        self.assertEqual(self.offset.sets, [Level.LOW, Level.MEDIUM, Level.HIGH])
+        # the first is the startup check-set of the unchanged level: not a level event
+        self.assertEqual(self.offset.sets, [Level.OFF, Level.LOW, Level.MEDIUM, Level.HIGH])
         self.assertEqual([e["to"] for e in self.events("level")], ["low", "medium", "high"])
         self.assertEqual(len(self.messages()), 1)  # just the restart alert
 
@@ -380,9 +410,9 @@ class TestNvidiaProblems(LoopTest):
         self.sensors.cards, self.sensors.error = [], "NVIDIA-SMI has failed"
         self.sensors.power_w = 300.0
         self.run_for(25)
-        self.assertEqual(self.offset.sets, [])
+        self.assertEqual(self.offset.sets, [Level.OFF])  # the startup check-set
         self.run_for(10)
-        self.assertEqual(self.offset.sets, [Level.MEDIUM])
+        self.assertEqual(self.offset.sets, [Level.OFF, Level.MEDIUM])
 
 
 class TestMaxNotEnough(LoopTest):

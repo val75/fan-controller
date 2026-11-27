@@ -186,6 +186,8 @@ are fewer things that can fail.
   read less often than GPU temps.
 - The current offset: read **at startup**, **after every set** (to verify it), and
   periodically to notice manual changes (e.g. from the iDRAC web UI).
+  The first poll after startup always sets the level, even an unchanged one: it proves
+  racadm works and closes a racadm incident an earlier run left open (decided 2026-11-27).
 
 Poll interval: **5 s** *(my call)*. A racadm read takes ~2.4 s, so don't read the offset on
 every poll.

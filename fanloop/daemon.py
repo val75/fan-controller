@@ -71,7 +71,9 @@ class Loop:
         self.mono, self.wall, self.llama = mono, wall, llama
 
         self.current_level: Optional[Level] = None
-        self._set_failed = False
+        # True at startup: the first step always sets, which proves racadm works and closes
+        # a racadm incident an earlier run left open, even when the offset already matches.
+        self._set_failed = True
         self._logged_target: Optional[Level] = None
         self._last_reason = ""
         self._nvidia_bad = 0
@@ -80,7 +82,7 @@ class Loop:
         self._slowdown_seen: Optional[float] = None
         self._max_since: Optional[float] = None
         self._hot_history: Deque[Tuple[float, float]] = collections.deque()
-        self._health = {"nvidia_ok": False, "ipmi_ok": False, "racadm_ok": False, "store_ok": True}
+        self._health = {"nvidia_ok": False, "ipmi_ok": False, "racadm_ok": False, "store_ok": False}  # store_ok: the first good sample closes an old incident
         # filled each step
         self._cards: List[CardReading] = []
         self._busy = False
@@ -188,7 +190,7 @@ class Loop:
             first_try = target != self._logged_target or not self._set_failed
             # The set comes first: nothing about recording may delay or prevent it.
             result = self.offset.set(target)
-            if first_try:
+            if first_try and target != current:  # the startup check-set of an unchanged level isn't a change
                 self._event(wall, "level", {"from": _name(current), "to": _name(target), "reason": decision.reason})
                 self._logged_target = target
             if result.ok:
