@@ -402,6 +402,35 @@ class TestReadsDontBlockTheLoop(unittest.TestCase):
         self.assertEqual(len(results["events"]), 50)
         self.assertEqual(results["versions"][0]["version"], 1)
 
+    def test_a_slow_summary_does_not_hold_up_the_loop(self):
+        # Review 2, I1: summary() held Service._lock while waiting for a reader, and the
+        # loop takes it for thresholds() before every set and for publish().
+        store = Store(":memory:", load_defaults())
+        self.addCleanup(store.close)
+        service = Service(store, Alerter(FakeSender(), store), Marks(store), Holds(store),
+                          ReviewWatchdog(store), dry_run=False)
+        inside, release = threading.Event(), threading.Event()
+        real = store.episodes
+
+        def slow_episodes(*a, **kw):  # stands in for a wait on a busy reader pool
+            inside.set()
+            release.wait(5)
+            return real(*a, **kw)
+        store.episodes = slow_episodes
+        threading.Thread(target=service.summary, args=(0, time.time()), daemon=True).start()
+        self.assertTrue(inside.wait(2))
+        done = threading.Event()
+
+        def loop_calls():
+            service.thresholds()
+            service.publish({"level": "off"})
+            service.status()
+            done.set()
+        threading.Thread(target=loop_calls, daemon=True).start()
+        finished = done.wait(1)
+        release.set()
+        self.assertTrue(finished, "the loop waited for a summary")
+
 
 class TestReadConnectionsAreBounded(unittest.TestCase):
     def test_many_short_lived_threads_share_a_few_read_connections(self):

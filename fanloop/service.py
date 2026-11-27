@@ -55,8 +55,7 @@ class Service:
     # -- thresholds ---------------------------------------------------------------
 
     def thresholds(self):
-        with self._lock:
-            return self.store.current()
+        return self.store.current()  # atomic on its own; no Service._lock, so the loop never waits for the API
 
     def write(self, req: WriteRequest, now: float) -> WriteResult:
         with self._lock:
@@ -135,54 +134,51 @@ class Service:
     def test_alert(self, now: float) -> None:
         self.alerter.notify("Test alert: the fan loop can reach you.", now)
 
-    # -- status and summary -------------------------------------------------------------
+    # -- status and summary: reads only, so no Service._lock --
 
     def publish(self, snapshot: Dict) -> None:
-        with self._lock:
-            self._snapshot = dict(snapshot)
+        self._snapshot = dict(snapshot)  # one assignment; readers copy whichever dict is current
 
     def status(self, now: Optional[float] = None) -> Dict:
         now = time.time() if now is None else now
-        with self._lock:
-            out = dict(self._snapshot)
-            out["dry_run"] = self.dry_run
-            out["timezone"] = str(self.tz)
-            try:  # the loop's own snapshot still answers when the database doesn't
-                version, t = self.store.current()
-                hold = self.holds.current(now)
-                out.update({
-                    "version": version,
-                    "thresholds": t.to_dict(),
-                    "hold": None if hold is None else
-                    {"level": hold.level.name.lower(), "since": hold.since, "until": hold.until},
-                    "open_marks": self.store.marks_open(),
-                    "last_review_ok_at": self.store.kv_get("last_review_ok_at"),
-                    "review_watchdog_muted": self.watchdog.muted(now),
-                })
-            except Exception as e:
-                out["store_error"] = repr(e)[:300]
-            return out
+        out = dict(self._snapshot)
+        out["dry_run"] = self.dry_run
+        out["timezone"] = str(self.tz)
+        try:  # the loop's own snapshot still answers when the database doesn't
+            version, t = self.store.current()
+            hold = self.holds.current(now)
+            out.update({
+                "version": version,
+                "thresholds": t.to_dict(),
+                "hold": None if hold is None else
+                {"level": hold.level.name.lower(), "since": hold.since, "until": hold.until},
+                "open_marks": self.store.marks_open(),
+                "last_review_ok_at": self.store.kv_get("last_review_ok_at"),
+                "review_watchdog_muted": self.watchdog.muted(now),
+            })
+        except Exception as e:
+            out["store_error"] = repr(e)[:300]
+        return out
 
     def summary(self, since: float, until: float) -> Dict:
-        with self._lock:
-            version, _ = self.store.current()
-            episodes = [e for e in self.store.episodes(since_ts=since, limit=100_000) if e.start <= until]
-            level_s: Dict[str, float] = {}
-            peak_c: Dict[int, float] = {}
-            for e in episodes:
-                for name, s in e.level_s.items():
-                    level_s[name] = level_s.get(name, 0.0) + s
-                for card, temp in e.peak_c.items():
-                    peak_c[card] = max(peak_c.get(card, temp), temp)
-            inlets = [e.inlet_max for e in episodes if e.inlet_max is not None]
-            return {
-                "since": since,
-                "until": until,
-                "version": version,
-                "episodes": len(episodes),
-                "qualifying_on_current": qualifying_episodes(self.store, version),
-                "slowdown_s": sum(e.throttled_s for e in episodes),
-                "level_s": level_s,
-                "peak_c": peak_c,
-                "max_inlet": max(inlets) if inlets else None,
-            }
+        version, _ = self.store.current()
+        episodes = [e for e in self.store.episodes(since_ts=since, limit=100_000) if e.start <= until]
+        level_s: Dict[str, float] = {}
+        peak_c: Dict[int, float] = {}
+        for e in episodes:
+            for name, s in e.level_s.items():
+                level_s[name] = level_s.get(name, 0.0) + s
+            for card, temp in e.peak_c.items():
+                peak_c[card] = max(peak_c.get(card, temp), temp)
+        inlets = [e.inlet_max for e in episodes if e.inlet_max is not None]
+        return {
+            "since": since,
+            "until": until,
+            "version": version,
+            "episodes": len(episodes),
+            "qualifying_on_current": qualifying_episodes(self.store, version),
+            "slowdown_s": sum(e.throttled_s for e in episodes),
+            "level_s": level_s,
+            "peak_c": peak_c,
+            "max_inlet": max(inlets) if inlets else None,
+        }
