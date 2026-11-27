@@ -158,5 +158,106 @@ class TestState(unittest.TestCase):
         self.assertEqual([n["text"] for n in state.notes(2)], ["note 1", "note 2"])
 
 
+def ep(start, dur, peak=70, inlet=12, level_s=None, review=False, hold=None, thr=0, changes=2):
+    level_s = level_s or {"medium": dur}
+    return {"start": start, "end": start + dur, "duration_s": dur, "inlet_min": inlet, "inlet_mean": inlet,
+            "inlet_max": inlet, "peak_c": {"0": peak, "1": peak - 4}, "first_slowdown_s": None, "throttled_s": thr,
+            "level_s": level_s, "level_changes": changes, "review_overlap": review, "hold_level": hold, "versions": [1]}
+
+
+NOW = 1795794210.0  # Fri 2026-11-27 17:43 EET
+# /status and /summary as the loop answers them (captured from LoopFixture's API).
+STATUS = {**SNAPSHOT, "dry_run": False, "timezone": "EET", "version": 1,
+          "thresholds": {"low": 55, "medium": 65, "high": 78, "margin": 5, "hold_s": 180, "ambient_rules": []},
+          "hold": None, "open_marks": [], "last_review_ok_at": None, "review_watchdog_muted": False}
+SUMMARY_EMPTY = {"since": NOW - 86400, "until": NOW, "version": 1, "episodes": 0, "qualifying_on_current": 0,
+                 "slowdown_s": 0, "level_s": {}, "peak_c": {}, "max_inlet": None}
+CHANGES = [  # /changes "versions"
+    {"version": 1, "created_at": 0.0, "source": "defaults", "reason": "starting thresholds (spec 5.3)",
+     "thresholds": STATUS["thresholds"], "changes": []},
+    {"version": 2, "created_at": NOW - 3600, "source": "review", "reason": "louder test",
+     "thresholds": {**STATUS["thresholds"], "hold_s": 190}, "changes": [{"param": "hold_s", "from": 180, "to": 190}]},
+]
+
+
+class TestAnalysis(unittest.TestCase):
+    def test_qualifies(self):
+        self.assertTrue(fanlib.qualifies(ep(0, 360)))
+        self.assertFalse(fanlib.qualifies(ep(0, 359)))
+        self.assertFalse(fanlib.qualifies(ep(0, 900, review=True)))
+        self.assertFalse(fanlib.qualifies(ep(0, 900, hold="medium")))
+
+    def test_settle_by_level_uses_hotter_card_minus_inlet(self):
+        s = fanlib.settle_by_level([ep(0, 900, peak=73, inlet=12), ep(1000, 900, peak=71, inlet=13), ep(3000, 60)])
+        self.assertEqual(s["medium"], {"n": 2, "median": 59.5, "min": 58.0, "max": 61.0})
+
+    def test_version_stats_and_compare_order(self):
+        a = fanlib.version_stats([ep(0, 3600, thr=0, level_s={"medium": 3600})])
+        b = fanlib.version_stats([ep(0, 3600, thr=0, level_s={"medium": 1800, "high": 1800})])
+        self.assertEqual(fanlib.compare(a, b), "worse")          # louder, same slowdown
+        c = fanlib.version_stats([ep(0, 3600, thr=30)])
+        self.assertEqual(fanlib.compare(c, b), "better")         # no slowdown beats quieter
+        self.assertEqual(fanlib.compare(a, a), "same")
+
+    def test_compare_needs_qualifying_episodes(self):
+        a = fanlib.version_stats([ep(0, 60)])
+        self.assertEqual(fanlib.compare(a, fanlib.version_stats([])), "not enough data")
+
+    def test_version_stats_with_no_episodes(self):
+        s = fanlib.version_stats([])
+        self.assertEqual((s["n"], s["slowdown_per_h"], s["loud_share"], s["inlet"]), (0, 0, 0, None))
+
+    def test_step_response(self):
+        samples = [{"ts": t, "temp0": 60 + t / 60, "temp1": 50} for t in range(0, 400, 5)]
+        r = fanlib.step_response(samples, 100)
+        self.assertEqual((r["temp_at"], r["delta"]), (61.7, 3.0))
+        self.assertIsNone(fanlib.step_response([], 100))
+        self.assertIsNone(fanlib.step_response([{"ts": 100, "temp0": 60, "temp1": None}], 100))  # no "after"
+
+    def test_fmt_time(self):
+        self.assertEqual(fanlib.fmt_time(NOW, "EET"), "Fri 17:43")
+
+    def test_reports_with_no_episodes(self):
+        text = fanlib.review_report(STATUS, SUMMARY_EMPTY, [], [], [], [], [], since=NOW - 21600, now=NOW)
+        self.assertIn("Since last review (Fri 11:43): no episodes", text)
+        self.assertIn("not enough data", text)
+        self.assertIn("none yet", text)
+        self.assertIn("Problems: none", text)
+        self.assertIn("No threshold changes.", fanlib.daily_report(STATUS, SUMMARY_EMPTY, [], NOW))
+
+    def test_review_report_numbers(self):
+        eps = [ep(NOW - 5000, 900, peak=73, inlet=12), ep(NOW - 3000, 900, peak=71, inlet=13)]
+        summary = {**SUMMARY_EMPTY, "episodes": 2, "qualifying_on_current": 2}
+        steps = [{"at": NOW - 4900, "from": "low", "to": "medium", "temp_at": 63.0, "temp_after": 66.5, "delta": 3.5}]
+        notes = [{"at": NOW - 21600, "text": "What: no change.\nCheck next time: Medium."}]
+        text = fanlib.review_report(STATUS, summary, eps, eps, CHANGES, steps, notes, since=NOW - 21600, now=NOW,
+                                    truncated=True)
+        lines = text.splitlines()
+        self.assertTrue(lines[0].startswith("Now: off (steady), cards 41.0/41.0°C, inlet 12.0°C, thresholds v1: "
+                                            "Low 55, Medium 65, High 78, margin 5, hold 180 s, ambient none"), lines[0])
+        self.assertIn("2 episodes, 30 min busy, slowdown 0 s, peak 73.0°C, inlet 12.0–13.0°C", text)
+        self.assertIn("(list truncated)", text)
+        self.assertIn("On v1: 2 qualifying episodes (loop's count: 2; a quieter review change needs 3)", text)
+        self.assertIn("Medium +59.5°C (n 2, 58.0–61.0)", text)
+        self.assertIn("Fri 16:21 low→medium: 63.0→66.5°C over 3 min", text)
+        self.assertIn("v1 → v2 review: hold_s 180 → 190 (louder test)", text)
+        self.assertIn("Review changes in the last 24 h: 1 of 2; user-chat: 0 of 6", text)
+        self.assertIn("Fri 11:43: What: no change. Check next time: Medium.", text)
+
+    def test_problems_and_daily_report(self):
+        status = {**STATUS, "health": {**STATUS["health"], "racadm_ok": False, "set_failed": True},
+                  "store_error": "OperationalError('disk full')"}
+        summary = {**SUMMARY_EMPTY, "episodes": 3, "level_s": {"off": 60, "low": 120, "medium": 600},
+                   "peak_c": {"0": 72.5, "1": 68.0}, "max_inlet": 13.0, "slowdown_s": 0}
+        text = fanlib.review_report(status, summary, [], [], [], [], [], since=NOW - 21600, now=NOW)
+        self.assertIn("Problems: racadm_ok false, set_failed, store_error OperationalError('disk full')", text)
+        daily = fanlib.daily_report(status, summary, CHANGES, NOW).splitlines()
+        self.assertEqual(daily[0], "Fans, last 24 h: 3 episodes, 13 min busy, time at Low/Medium/High/Max "
+                                   "2/10/0/0 min, slowdown 0 s, peak 72.5°C, max inlet 13.0°C.")
+        self.assertEqual(daily[1], "Now: off, cards 41.0/41.0°C, inlet 12.0°C, thresholds v1.")
+        self.assertEqual(daily[2], "Changed: v1 → v2 review: hold_s 180 → 190 (louder test)")
+        self.assertTrue(daily[3].startswith("Problems: racadm_ok false"))
+
+
 if __name__ == "__main__":
     unittest.main()
