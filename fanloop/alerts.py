@@ -175,6 +175,16 @@ class Alerter:
         except Exception:
             return False
 
+    def forget(self, kind: str) -> None:
+        """Clear a kind's rate limit, so its next alert is sent."""
+        try:
+            with self._state_lock:
+                self._load()
+                if self._last.pop(kind, None) is not None:
+                    self._save(_ALERT_LAST, self._last)
+        except Exception:
+            pass
+
     def notify(self, text: str, now: float) -> None:
         """Always sent: threshold changes, holds, reminders, recoveries."""
         try:

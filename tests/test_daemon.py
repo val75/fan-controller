@@ -574,6 +574,14 @@ class TestMain(unittest.TestCase):
         self.assertIn("no emergency rule until it starts again", stops[0])
         self.assertEqual(self.texts()[-1], stops[0])
 
+    def test_the_start_after_a_clean_stop_is_always_reported(self):
+        # Else "stopping" with no "started" after it, within the 30-min limit, reads as still down.
+        self.blocker.close()
+        self.run_main(dry_run=False)
+        self.run_main(dry_run=False)
+        starts = [t for t in self.texts() if t.startswith("Fan loop started")]
+        self.assertEqual(len(starts), 2, self.texts())
+
     def test_a_startup_failure_is_reported_once_not_on_every_restart(self):
         self.blocker.close()
         bad_db = os.path.join(self.dir, "no-such-dir", "fan.db")

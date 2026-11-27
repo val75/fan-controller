@@ -492,6 +492,7 @@ def main(argv: Optional[List[str]] = None, sender=None, runner=None,
                      else f"at {_name(loop.current_level).capitalize()}")
             alerter.notify(f"Fan loop stopping. The fans stay where they are ({where}); "
                            "no emergency rule until it starts again.", time.time())
+            alerter.forget("restart")  # so the next "started" isn't rate-limited away after this
         stop.set()
         api.close()
         alerter.drain(5)
