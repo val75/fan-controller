@@ -1,15 +1,21 @@
 """Tests for Hermes's scripts on hag (plan 2). They run against the real fanloop API, in-process."""
+import contextlib
+import io
 import json
 import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
+from unittest import mock
 
 from fanloop.alerts import Alerter
 from fanloop.api import make_servers, serve
 from fanloop.holds import Holds
+from fanloop.levels import Level
 from fanloop.marks import Marks
+from fanloop.readings import CardReading, IpmiReading
 from fanloop.service import Service
 from fanloop.store import Store
 from fanloop.thresholds import load_defaults
@@ -19,6 +25,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(REPO, "hermes", "scripts")
 sys.path.insert(0, SCRIPTS)
 
+import fan_review  # noqa: E402
 import fanlib  # noqa: E402
 
 TOKEN = "test-token-0123456789"
@@ -257,6 +264,73 @@ class TestAnalysis(unittest.TestCase):
         self.assertEqual(daily[1], "Now: off, cards 41.0/41.0°C, inlet 12.0°C, thresholds v1.")
         self.assertEqual(daily[2], "Changed: v1 → v2 review: hold_s 180 → 190 (louder test)")
         self.assertTrue(daily[3].startswith("Problems: racadm_ok false"))
+
+
+class TestReviewScript(LoopFixture):
+    def run_main(self, **kw):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = fan_review.main([], settings_path=self.settings_path, **kw)
+        return code, out.getvalue()
+
+    def test_mark_starts_before_anything_is_read(self):
+        reads = []
+        real_get = fanlib.Loop.get
+
+        def spy(loop, path, **q):
+            reads.append((path, len(self.loop_store.marks_open())))
+            return real_get(loop, path, **q)
+        with mock.patch.object(fanlib.Loop, "get", spy):
+            code, _ = self.run_main()
+        self.assertEqual(code, 0)
+        self.assertTrue(reads and all(open_marks == 1 for _, open_marks in reads), reads)
+
+    def test_report_and_state(self):
+        now = time.time()
+        code, out = self.run_main(now=now)
+        self.assertEqual(code, 0)
+        self.assertIn("thresholds v1", out)
+        self.assertIn("Since last review", out)
+        state = fanlib.State(self.state_dir).load()
+        self.assertEqual(state["mark_id"], self.loop_store.marks_open()[0]["id"])
+        self.assertEqual(state["last_review_started_at"], now)
+        self.assertNotIn("last_review_at", state)  # only an ended review (fan.py note) moves it
+
+    def test_since_is_the_last_ended_review(self):
+        fanlib.State(self.state_dir).save({"last_review_at": NOW - 3600})
+        _, out = self.run_main(now=NOW)
+        self.assertIn("Since last review (Fri 16:43)", out)
+
+    def test_step_ups_come_from_level_events_and_history(self):
+        now = time.time()
+        at = now - 600
+        for t in range(int(at) - 30, int(at) + 211, 5):
+            temp = 63.0 + max(0, t - at) / 60
+            self.loop_store.add_sample(t, [CardReading(0, temp, 70, 100, 1100, True, False, False),
+                                           CardReading(1, temp - 4, 70, 100, 1100, True, False, False)],
+                                       IpmiReading(12, 20, {}, 340), Level.MEDIUM, True)
+        self.loop_store.add_event(at, "level", {"from": "low", "to": "medium", "reason": "step-up"})
+        self.loop_store.add_event(at + 400, "level", {"from": "medium", "to": "low", "reason": "step-down"})
+        _, out = self.run_main(now=now)
+        steps = [line for line in out.splitlines() if "→" in line and "over 3 min" in line]
+        self.assertEqual(len(steps), 1, out)
+        self.assertIn("low→medium: 63.0→66.0°C over 3 min", steps[0])
+
+    def test_unreachable_loop_fails_the_run(self):
+        self.point_settings_at("http://127.0.0.1:9")
+        code, out = self.run_main()
+        self.assertEqual(code, 1)
+        self.assertEqual(out.strip().count("\n"), 0)
+        self.assertTrue(out.startswith("Can't reach the fan loop:"), out)
+        self.assertEqual(fanlib.State(self.state_dir).load(), {})
+
+    def test_failed_read_after_mark_keeps_agent_asleep(self):
+        with mock.patch.object(fanlib.Loop, "get", side_effect=fanlib.LoopError("Can't reach the fan loop: x")):
+            code, out = self.run_main()
+        self.assertEqual(code, 1)
+        lines = out.strip().splitlines()
+        self.assertEqual(lines[0], "Review data incomplete: Can't reach the fan loop: x")
+        self.assertEqual(lines[-1], '{"wakeAgent": false}')
 
 
 if __name__ == "__main__":
