@@ -115,6 +115,20 @@ deny anything else for a fan question.
 - A review with no change sends nothing; its note is saved on `hag`.
 - An error notice from `fan-daily`: `hag` can't reach the loop.
 
+**`/hot` in Telegram** prints `fan.py status` without the model (about a second). It's a
+Hermes quick command, added by hand to `/home/hermes/.hermes/config.yaml` (the playbook
+doesn't manage that file; re-add it on a rebuilt `hag`), then `systemctl --user restart
+hermes-gateway.service` as `hermes`:
+
+```yaml
+quick_commands:
+  hot:
+    type: exec
+    command: /usr/bin/python3 /home/hermes/.hermes/scripts/fan.py status
+```
+
+It works when typed; Telegram's menu is full (60), so it isn't listed there.
+
 **Undoing a Hermes change:** `fanctl revert v<N>` on `t4`, like any other change. In
 chat you can also ask Hermes ("set Medium back to 65"); it writes as `user-chat`, at
 most 6 times a day.
