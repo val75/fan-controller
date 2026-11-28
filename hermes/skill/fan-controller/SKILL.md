@@ -92,7 +92,8 @@ Your final reply is delivered to the user on Telegram.
   - what you'll check next.
 - Also send a message for a rejected write you couldn't resolve, a thermal slowdown in the data, or
   data suggesting Max won't be enough.
-- Otherwise reply exactly `[SILENT]`. The daily summary covers quiet periods.
+- Otherwise your whole reply is `[SILENT]`, with nothing before or after it: your reasoning is
+  already in the note, and the daily summary covers quiet periods.
 - If the review data couldn't be read, or `fan.py note` failed, put `[CRON_FAILURE]` alone on line 1,
   then one line saying what failed.
 
