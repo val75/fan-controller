@@ -198,18 +198,20 @@ def _range(values) -> Optional[Tuple[float, float]]:
 
 
 def version_stats(eps: List[dict]) -> dict:
-    busy_s = sum(e.get("duration_s", 0) for e in eps)
-    slowdown_s = sum(e.get("throttled_s", 0) for e in eps)
-    level_total = sum(sum((e.get("level_s") or {}).values()) for e in eps)
-    loud = sum((e.get("level_s") or {}).get(name, 0) for e in eps for name in LOUD)
-    changes = sum(e.get("level_changes", 0) for e in eps)
-    hours = busy_s / 3600
+    """Totals count every episode; the rates leave out held and review episodes (spec 5.5: a hold or
+    Hermes's own load distorts loud time and level changes), so `compare` judges the thresholds."""
+    clean = [e for e in eps if not e.get("review_overlap") and e.get("hold_level") is None]
+    clean_busy_s = sum(e.get("duration_s", 0) for e in clean)
+    level_total = sum(sum((e.get("level_s") or {}).values()) for e in clean)
+    loud = sum((e.get("level_s") or {}).get(name, 0) for e in clean for name in LOUD)
+    changes = sum(e.get("level_changes", 0) for e in clean)
+    hours = clean_busy_s / 3600
     return {
         "n": len(eps),
         "qualifying": sum(1 for e in eps if qualifies(e)),
-        "busy_s": busy_s,
-        "slowdown_s": slowdown_s,
-        "slowdown_per_h": slowdown_s / hours if hours else 0,
+        "busy_s": sum(e.get("duration_s", 0) for e in eps),
+        "slowdown_s": sum(e.get("throttled_s", 0) for e in eps),
+        "slowdown_per_h": sum(e.get("throttled_s", 0) for e in clean) / hours if hours else 0,
         "loud_share": loud / level_total if level_total else 0,
         "changes_per_h": changes / hours if hours else 0,
         "inlet": _range([e.get("inlet_min") for e in eps] + [e.get("inlet_max") for e in eps]),
@@ -310,7 +312,7 @@ def _stats_line(label: str, s: dict) -> str:
     inlet = "" if s["inlet"] is None else f", inlet {_t(s['inlet'][0])}–{_t(s['inlet'][1])}°C"
     return (f"{label}: {s['n']} episodes ({s['qualifying']} qualifying){dur}{inlet}, "
             f"slowdown {s['slowdown_per_h']:.0f} s per busy hour, loud (High/Max) {s['loud_share'] * 100:.0f}% "
-            f"of the time, {s['changes_per_h']:.1f} level changes per hour")
+            f"of the time, {s['changes_per_h']:.1f} level changes per hour (rates leave out held and review episodes)")
 
 
 def now_lines(status: dict) -> List[str]:
