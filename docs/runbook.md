@@ -69,7 +69,9 @@ announced on Telegram with its version numbers. Hard limits are enforced by the 
 It alerts when no Hermes review has finished properly for 13 h, then once a day, and
 sends "Hermes reviews are completing again." after the next review that ends properly.
 Reviews run every 6 h, so one alert means about two missed reviews: check `hermes cron
-list` on `hag` (see Hermes below) and the model server on `t4`. While Hermes is stopped
+list` on `hag` (see Hermes below) and the model server on `t4`. A review whose data
+couldn't be read ends silently, without waking the model (Hermes drops the error text):
+`python3 ~/.hermes/scripts/fan.py status` as `hermes` on `hag` prints the same error. While Hermes is stopped
 on purpose (`hermes cron pause fan-review`):
 
 ```

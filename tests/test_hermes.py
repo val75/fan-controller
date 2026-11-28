@@ -213,6 +213,14 @@ class TestAnalysis(unittest.TestCase):
         a = fanlib.version_stats([ep(0, 60)])
         self.assertEqual(fanlib.compare(a, fanlib.version_stats([])), "not enough data")
 
+    def test_compare_leaves_out_held_and_review_episodes(self):
+        # Spec 5.5: a hold or Hermes's own load distorts loud time and level changes.
+        a = fanlib.version_stats([ep(0, 3600)])
+        b = fanlib.version_stats([ep(0, 3600), ep(4000, 7200, level_s={"high": 7200}, hold="high"),
+                                  ep(12000, 600, review=True, changes=40)])
+        self.assertEqual(fanlib.compare(a, b), "same")
+        self.assertEqual((b["n"], b["busy_s"]), (3, 11400))  # totals still count every episode
+
     def test_version_stats_with_no_episodes(self):
         s = fanlib.version_stats([])
         self.assertEqual((s["n"], s["slowdown_per_h"], s["loud_share"], s["inlet"]), (0, 0, 0, None))
@@ -319,20 +327,34 @@ class TestReviewScript(LoopFixture):
         self.assertEqual(len(steps), 1, out)
         self.assertIn("low→medium: 63.0→66.0°C over 3 min", steps[0])
 
-    def test_unreachable_loop_fails_the_run(self):
+    # Hermes obeys {"wakeAgent": false} only when the script exits 0; on a non-zero exit it wakes the
+    # model with "Script Error" (cron/scheduler.py, v0.23.1), which would then end the mark with a note.
+    def test_unreachable_loop_keeps_agent_asleep(self):
         self.point_settings_at("http://127.0.0.1:9")
         code, out = self.run_main()
-        self.assertEqual(code, 1)
-        self.assertEqual(out.strip().count("\n"), 0)
-        self.assertTrue(out.startswith("Can't reach the fan loop:"), out)
+        lines = out.strip().splitlines()
+        self.assertEqual((code, len(lines)), (0, 2), out)
+        self.assertTrue(lines[0].startswith("Can't reach the fan loop:"), out)
+        self.assertEqual(lines[1], '{"wakeAgent": false}')
         self.assertEqual(fanlib.State(self.state_dir).load(), {})
 
     def test_failed_read_after_mark_keeps_agent_asleep(self):
         with mock.patch.object(fanlib.Loop, "get", side_effect=fanlib.LoopError("Can't reach the fan loop: x")):
             code, out = self.run_main()
-        self.assertEqual(code, 1)
+        self.assertEqual(code, 0)
         lines = out.strip().splitlines()
         self.assertEqual(lines[0], "Review data incomplete: Can't reach the fan loop: x")
+        self.assertEqual(lines[-1], '{"wakeAgent": false}')
+        self.assertEqual(len(self.loop_store.marks_open()), 1)  # left open: the loop times it out as failed
+
+    def test_crash_after_mark_keeps_agent_asleep(self):
+        os.makedirs(self.state_dir, exist_ok=True)
+        with open(os.path.join(self.state_dir, "notes.jsonl"), "wb") as f:
+            f.write(b'{"text": "\xff\xfe"}\n')  # not UTF-8: reading the notes raises
+        code, out = self.run_main()
+        lines = out.strip().splitlines()
+        self.assertEqual(code, 0)
+        self.assertTrue(lines[0].startswith("Review data incomplete: "), out)
         self.assertEqual(lines[-1], '{"wakeAgent": false}')
 
 
@@ -464,6 +486,8 @@ class TestSkillAndScripts(unittest.TestCase):
         for sub in ("status", "episodes", "compare", "changes", "write", "note"):
             self.assertIn(f"python3 /home/hermes/.hermes/scripts/fan.py {sub}", text)
         self.assertNotRegex(text, r"python3? -c|<<")
+        # A pre-run killed by Hermes (timeout) wakes the model with "Script Error": no note then.
+        self.assertIn("`Script Error`, `Review data incomplete` or `Can't reach the fan loop`", text)
         self.assertLessEqual(text.count("\n"), 130)
         with open(os.path.join(REPO, "hermes/prompts/review.md"), encoding="utf-8") as f:
             self.assertIn("fan-controller skill", f.read())

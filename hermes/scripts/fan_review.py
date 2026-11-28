@@ -31,7 +31,13 @@ def _step_ups(loop: fanlib.Loop, events: list) -> list:
     return steps
 
 
+SLEEP = json.dumps({"wakeAgent": False})
+
+
 def main(argv=None, settings_path: str = fanlib.DEFAULT_SETTINGS, now=None) -> int:
+    """Always exits 0: Hermes obeys the wakeAgent gate only after exit 0, and wakes the model on any
+    other exit, which would then end the mark with a note and count a failed review as a good one.
+    A failure keeps the agent asleep; the loop's review watchdog reports missed reviews."""
     argparse.ArgumentParser(description="Start a fan review: send the start mark, print the review data.") \
         .parse_args(argv)
     now = time.time() if now is None else now
@@ -41,25 +47,28 @@ def main(argv=None, settings_path: str = fanlib.DEFAULT_SETTINGS, now=None) -> i
         _, mark = loop.post("/marks/start", {})  # first, before any read
     except fanlib.LoopError as e:
         print(e)
-        return 1
-    saved = state.load()
-    state.save({**saved, "mark_id": mark.get("id"), "last_review_started_at": now})
-    since = saved.get("last_review_at") or now - 86400
+        print(SLEEP)
+        return 0
     try:
+        saved = state.load()
+        state.save({**saved, "mark_id": mark.get("id"), "last_review_started_at": now})
+        since = saved.get("last_review_at") or now - 86400
         status = loop.get("/status")
         summary = loop.get("/summary", since=since, until=now)
         eps_since = loop.get("/episodes", since=since)
         eps_current = loop.get("/episodes", version=status.get("version"))
         changes = loop.get("/changes", since=min(since, now - 86400))["versions"]
         events = loop.get("/events", since=since, kinds="level")["events"]
-        steps = _step_ups(loop, events)
-    except (fanlib.LoopError, KeyError, TypeError) as e:
-        print(f"Review data incomplete: {e}")
-        print(json.dumps({"wakeAgent": False}))  # the loop times the mark out: a failed review
-        return 1
-    print(fanlib.review_report(status, summary, eps_since["episodes"], eps_current["episodes"], changes, steps,
-                               state.notes(3), since=since, now=now,
-                               truncated=bool(eps_since.get("truncated") or eps_current.get("truncated"))))
+        report = fanlib.review_report(
+            status, summary, eps_since["episodes"], eps_current["episodes"], changes, _step_ups(loop, events),
+            state.notes(3), since=since, now=now,
+            truncated=bool(eps_since.get("truncated") or eps_current.get("truncated")))
+    except Exception as e:  # anything: the mark is open and the model must not run on half the data
+        detail = e if isinstance(e, fanlib.LoopError) else f"{type(e).__name__}: {fanlib._one_line(e)}"
+        print(f"Review data incomplete: {detail}")
+        print(SLEEP)  # the loop times the mark out: a failed review
+        return 0
+    print(report)
     return 0
 
 

@@ -47,7 +47,9 @@ command again.
 ## A scheduled review
 
 1. The review data is already in your prompt (fan_review.py printed it and sent the start mark).
-   Don't run `status` again unless you need a value after a write.
+   Don't run `status` again unless you need a value after a write. If the prompt shows
+   `Script Error`, `Review data incomplete` or `Can't reach the fan loop` instead of the data, stop:
+   don't run `fan.py note` (the loop must count this review as failed), and reply as below.
 2. Judge your last change first. If the data shows one since your last notes, run
    `compare <old> <new>`. If the verdict is `worse`, revert it, as one change, and make no other.
 3. Otherwise decide whether **at most one** change is justified. If there was a thermal slowdown,
@@ -97,8 +99,9 @@ Your final reply is delivered to the user on Telegram.
   data suggesting Max won't be enough.
 - Otherwise your whole reply is `[SILENT]`, with nothing before or after it: your reasoning is
   already in the note, and the daily summary covers quiet periods.
-- If the review data couldn't be read, or `fan.py note` failed, put `[CRON_FAILURE]` alone on line 1,
-  then one line saying what failed.
+- If the review data couldn't be read (`Script Error`, `Review data incomplete` or `Can't reach the
+  fan loop`), or `fan.py note` failed, put `[CRON_FAILURE]` alone on line 1, then one line saying
+  what failed.
 
 ## In chat
 
