@@ -408,6 +408,9 @@ these minutes should be tagged.)*
   script, so the start is always sent. **The plan first checks whether Hermes's cron can run
   commands before and after a job**, outside the model; if it can, those send the marks
   instead, and the timeout stays as a backstop.
+  *Checked 2026-11-27: Hermes cron has a pre-run script but no post-run hook (v0.23.1), so
+  the pre-run script (`fan_review.py`) sends the start and the note script (`fan.py note`)
+  the end.*
 - Chat with Hermes isn't marked: replies are short, and short episodes are already skipped
   for settling estimates (5.5).
 

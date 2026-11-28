@@ -66,13 +66,63 @@ announced on Telegram with its version numbers. Hard limits are enforced by the 
 
 ## The review watchdog
 
-It alerts when no Hermes review has finished properly for 13 h, then once a day. Until
-Hermes runs (plan 2), or while it's stopped on purpose:
+It alerts when no Hermes review has finished properly for 13 h, then once a day, and
+sends "Hermes reviews are completing again." after the next review that ends properly.
+Reviews run every 6 h, so one alert means about two missed reviews: check `hermes cron
+list` on `hag` (see Hermes below) and the model server on `t4`. While Hermes is stopped
+on purpose (`hermes cron pause fan-review`):
 
 ```
 fanctl mute reviews until 2026-12-31    # ends by itself
 fanctl mute off
 ```
+
+## Hermes
+
+Hermes runs on `hag` as the `hermes` user (`ssh hag`, then `sudo -u hermes -i`). Its
+model runs on `t4`'s GPUs, so each review heats them for a minute or two; the loop marks
+that time and leaves it out of the evidence.
+
+| Job | When (EET) | What |
+|---|---|---|
+| `fan-review` | 03, 09, 15, 21 h | `fan_review.py` sends the review's start mark and prints the data; the model decides on at most one change, writes a note (`fan.py note` sends the end mark) and replies |
+| `fan-daily` | 09:00 | `fan_daily.py` prints the 24 h summary; no model run |
+
+```
+hermes cron list                     # both jobs, active or paused, next run
+hermes cron pause fan-review         # stop reviews (mute the watchdog too, above)
+hermes cron resume fan-review
+hermes cron run fan-review           # one review now; the job must be active
+hermes cron edit fan-review ...      # change schedule or prompt (see hermes cron edit --help)
+```
+
+The playbook creates the jobs only if they're missing: to recreate one from the repo,
+`hermes cron remove <id>` and rerun the playbook. Scripts and skill are redeployed on
+every run.
+
+**What Hermes's messages mean** (from its own bot, not `[t4 fans]`):
+- A change or revert: what changed (`Medium 65 → 63°C, v7 → v8`), why, the evidence, and
+  what it will check next. The loop also announces it, as `source review`.
+- A slowdown, a rejected change it couldn't resolve, or a warning that Max may not be
+  enough: read it, and look at `fanctl history`.
+- The daily summary at 09:00: episodes, time at each level, slowdown, peak, threshold
+  changes, problems.
+- A review with no change sends nothing; its note is saved on `hag`.
+- An error notice from `fan-daily`: `hag` can't reach the loop.
+
+**Undoing a Hermes change:** `fanctl revert v<N>` on `t4`, like any other change. In
+chat you can also ask Hermes ("set Medium back to 65"); it writes as `user-chat`, at
+most 6 times a day.
+
+| What, on `hag` | Where |
+|---|---|
+| Scripts | `/home/hermes/.hermes/scripts/fan*.py` |
+| Skill | `/home/hermes/.hermes/skills/devops/fan-controller/SKILL.md` |
+| Settings (loop URL, paths) | `/home/hermes/.config/fan-controller/hermes.json` |
+| Write token | `/home/hermes/.config/fan-controller/write-token` (from the Ansible vault) |
+| Notes and review state | `/home/hermes/fan-controller/notes.jsonl`, `state.json` |
+| Jobs, run output, logs | `/home/hermes/.hermes/cron/jobs.json`, `cron/output/<job id>/`, `logs/agent.log` |
+| Hermes's own bot | set up by hand with `hermes gateway setup`; its token is in `/home/hermes/.hermes/.env` |
 
 ## Restoring from docks
 

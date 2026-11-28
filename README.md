@@ -8,7 +8,8 @@ Telegram, keeps its history in SQLite, and serves an HTTP API for the `fanctl`
 command and for a reviewing agent (Hermes) that tunes the thresholds.
 
 - Design: [`docs/superpowers/specs/2026-11-12-gpu-fan-controller-design.md`](docs/superpowers/specs/2026-11-12-gpu-fan-controller-design.md)
-- Implementation plan: [`docs/superpowers/plans/2026-11-23-fan-loop.md`](docs/superpowers/plans/2026-11-23-fan-loop.md)
+- Implementation plans: [`docs/superpowers/plans/2026-11-23-fan-loop.md`](docs/superpowers/plans/2026-11-23-fan-loop.md) (the loop),
+  [`docs/superpowers/plans/2026-11-27-hermes.md`](docs/superpowers/plans/2026-11-27-hermes.md) (Hermes reviews on `hag`)
 - Operating it: [`docs/runbook.md`](docs/runbook.md)
 
 Python 3.10, standard library only.
@@ -26,6 +27,7 @@ Python 3.10, standard library only.
 | `fanloop/cli.py`, `bin/fanctl` | the `fanctl` command |
 | `fanloop/replay.py`, `data/fan-tests-2026-11-09/` | replaying the recorded fan tests |
 | `deploy/` | systemd units, sudoers file, example config |
+| `hermes/scripts/`, `hermes/skill/`, `hermes/prompts/` | Hermes's side on `hag`: the review and daily scripts, `fan.py` commands, the skill, the review prompt |
 | `tests/` | unit tests, with real command output in `tests/fixtures/` |
 
 ## Tests
