@@ -1,6 +1,6 @@
 ---
 name: fan-controller
-description: The fans of t4, the Dell R730 lab box with two passively cooled Tesla T4 cards. Use for the scheduled fan reviews, and in chat whenever the user asks about t4's fans, GPU temperatures, fan levels, thresholds or fan reviews, or asks to change a threshold.
+description: The fans and GPU temperatures of t4, the Dell R730 lab box with two passively cooled Tesla T4 cards. In this chat, "how hot is it", "how hot is it now", temperature, heat and fan questions mean t4's GPUs, not the weather, unless the user names a place. Use it for those, for the scheduled fan reviews, and whenever the user asks about t4, its fans, fan levels, thresholds or fan reviews, or asks to change a threshold.
 ---
 
 # t4 fan controller

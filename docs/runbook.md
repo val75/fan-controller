@@ -98,7 +98,10 @@ hermes cron edit fan-review ...      # change schedule or prompt (see hermes cro
 
 The playbook creates the jobs only if they're missing: to recreate one from the repo,
 `hermes cron remove <id>` and rerun the playbook. Scripts and skill are redeployed on
-every run.
+every run. A Telegram conversation keeps the skill list it started with: after a new or
+changed skill, send Hermes `/new` before asking about the fans. In chat, Hermes asks
+before running a command; allow `python3 /home/hermes/.hermes/scripts/fan.py …`, and
+deny anything else for a fan question.
 
 **What Hermes's messages mean** (from its own bot, not `[t4 fans]`):
 - A change or revert: what changed (`Medium 65 → 63°C, v7 → v8`), why, the evidence, and

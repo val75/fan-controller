@@ -455,6 +455,9 @@ class TestSkillAndScripts(unittest.TestCase):
         with open(os.path.join(REPO, "hermes/skill/fan-controller/SKILL.md"), encoding="utf-8") as f:
             text = f.read()
         self.assertTrue(text.startswith("---\nname: fan-controller\ndescription:"))
+        description = text.split("\n")[2]
+        self.assertIn('"how hot is it now"', description)  # a bare "how hot" went to the weather (maps skill)
+        self.assertIn("not the weather", description)
         for sub in ("status", "episodes", "compare", "changes", "write", "note"):
             self.assertIn(f"python3 /home/hermes/.hermes/scripts/fan.py {sub}", text)
         self.assertNotRegex(text, r"python3? -c|<<")
