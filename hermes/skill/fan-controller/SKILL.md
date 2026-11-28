@@ -1,11 +1,14 @@
 ---
 name: fan-controller
-description: The fans and GPU temperatures of t4, the Dell R730 lab box with two passively cooled Tesla T4 cards. In this chat, "how hot is it", "how hot is it now", temperature, heat and fan questions mean t4's GPUs, not the weather, unless the user names a place. Use it for those, for the scheduled fan reviews, and whenever the user asks about t4, its fans, fan levels, thresholds or fan reviews, or asks to change a threshold.
+description: How hot is it now = t4 GPU temps, fans and fan reviews.
 ---
 
 # t4 fan controller
 
 ## What this is
+
+In this chat, "how hot is it", temperature, heat and fan questions mean t4's GPUs (the Dell R730
+lab box with two passively cooled Tesla T4 cards), not the weather, unless the user names a place.
 
 A loop on t4 sets the R730's fan offset (Off, Low, Medium, High, Max) every few seconds from the
 hotter T4 card's temperature, the inlet temperature and its thresholds; at 80°C it goes to Max on its
